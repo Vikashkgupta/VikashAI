@@ -1,5 +1,5 @@
 // File: netlify/functions/personalChat.js
-// Vikash AI — Personal Assistant Backend (Netlify Functions 2.0 Web-Standard SSE)
+// Vikash AI — Complete Personal Assistant Backend (Netlify Functions 2.0 Web-Standard SSE + Buffered Rescue)
 // Features: Dynamic 1-line welcome, GitHub Auto-Sync, Instagram Graph API (followers/posts/likes/comments),
 // Strategic Google Search grounding, Live IST Date/Time, Device Battery/Weather, & Supabase Session Logging.
 
@@ -55,20 +55,38 @@ async function discoverGeminiModels(apiKey) {
     const valid = (data.models || [])
       .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
       .map((m) => m.name.replace(/^models\//, ''))
-      .filter((name) => !/embedding|imagen|veo|aqa|tts/i.test(name));
+      .filter(
+        (name) =>
+          !/embedding|imagen|veo|aqa|tts|audio|robotics|thinking|learnlm|2\.5-pro|2\.5-flash|exp/i.test(name) &&
+          /gemini/i.test(name)
+      );
 
-    const prioritized = [
-      ...valid.filter((n) => /flash/i.test(n) && !/lite/i.test(n)),
-      ...valid.filter((n) => /flash/i.test(n) && /lite/i.test(n)),
-      ...valid.filter((n) => !/flash/i.test(n))
-    ];
+    const rankModel = (n) => {
+      const low = n.toLowerCase();
+      if (low.startsWith('gemini-3') && low.includes('flash-lite')) return 100;
+      if (low.startsWith('gemini-3') && low.includes('flash') && !low.includes('preview')) return 96;
+      if (low.startsWith('gemini-3') && low.includes('flash')) return 92;
+      if (low === 'gemini-flash-lite-latest') return 88;
+      if (low === 'gemini-flash-latest') return 85;
+      if (low.startsWith('gemini-2.0-flash-lite')) return 80;
+      if (low.startsWith('gemini-2.0-flash')) return 75;
+      return 50;
+    };
+
+    const prioritized = valid.sort((a, b) => rankModel(b) - rankModel(a));
     if (prioritized.length > 0) {
       cachedModels = prioritized;
       cachedModelsAt = now;
       return prioritized;
     }
   } catch {}
-  return ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash'];
+  return [
+    'gemini-3.5-flash-lite',
+    'gemini-3.8-flash',
+    'gemini-flash-lite-latest',
+    'gemini-flash-latest',
+    'gemini-2.0-flash-lite'
+  ];
 }
 
 async function fetchGitHubData() {
@@ -406,7 +424,7 @@ export default async (req) => {
   if (body.isWelcomeGreeting) {
     const prompt = `Generate a fresh, warm, 1-line Hindi/Hinglish welcome greeting (max 12 words) for "Vikash AI" (Personal Assistant of Vikash Kumar Gupta). Today is ${ist.dateStr}, ${ist.timeStr}. Do not repeat clichés, no markdown, just 1 crisp friendly line inviting the visitor to ask about Vikash, his projects, or anything online.`;
 
-    for (const model of models.slice(0, 2)) {
+    for (const model of models.slice(0, 3)) {
       try {
         const res = await fetch(
           `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
@@ -421,7 +439,11 @@ export default async (req) => {
         );
         if (res.ok) {
           const data = await res.json();
-          const welcome = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+          const welcome = data?.candidates?.[0]?.content?.parts
+            ?.filter((p) => p && typeof p.text === 'string' && !p.thought)
+            .map((p) => p.text)
+            .join('')
+            .trim();
           if (welcome) return jsonResponse(200, { success: true, welcome });
         }
       } catch {}
@@ -478,7 +500,7 @@ export default async (req) => {
     '🔗 सारे Social Links दो'
   ];
 
-  // Stream via SSE
+  // Stream via SSE with Buffered Rescue Fallback
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -520,7 +542,11 @@ export default async (req) => {
               if (!raw || raw === '[DONE]') continue;
               try {
                 const parsed = JSON.parse(raw);
-                const textPart = parsed?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
+                const textPart =
+                  parsed?.candidates?.[0]?.content?.parts
+                    ?.filter((p) => p && typeof p.text === 'string' && !p.thought)
+                    .map((p) => p.text)
+                    .join('') || '';
                 if (textPart) {
                   fullReply += textPart;
                   sendEvent({ type: 'delta', text: textPart });
@@ -534,6 +560,41 @@ export default async (req) => {
             break;
           }
         } catch {}
+      }
+
+      if (!succeeded) {
+        // Rescue fallback via standard generateContent if SSE stream failed
+        for (const rescueModel of models.slice(0, 3)) {
+          try {
+            const rRes = await fetch(
+              `https://generativelanguage.googleapis.com/v1beta/models/${rescueModel}:generateContent?key=${encodeURIComponent(apiKey)}`,
+              {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  systemInstruction: { parts: [{ text: systemInstruction }] },
+                  contents,
+                  generationConfig: { temperature: 0.6, maxOutputTokens: 1024 }
+                })
+              }
+            );
+            if (rRes.ok) {
+              const rData = await rRes.json();
+              const rText =
+                rData?.candidates?.[0]?.content?.parts
+                  ?.filter((p) => p && typeof p.text === 'string' && !p.thought)
+                  .map((p) => p.text)
+                  .join('')
+                  .trim() || '';
+              if (rText) {
+                fullReply = rText;
+                succeeded = true;
+                sendEvent({ type: 'delta', text: fullReply });
+                break;
+              }
+            }
+          } catch {}
+        }
       }
 
       if (!succeeded) {

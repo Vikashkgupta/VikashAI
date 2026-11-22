@@ -4,8 +4,14 @@ import React, { useState, useEffect, useRef } from 'react';
 
 // 👉 अपनी फोटो public/vikash.jpg में रखें (अगर फोटो न मिले तो अपने-आप "V" दिखेगा)
 const VIKASH_AVATAR_URL = '/vikash.jpg';
-const CHAT_API = '/.netlify/functions/personalChat';
-const ADMIN_API = '/.netlify/functions/adminDashboard';
+const LIVE_NETLIFY_SITE = 'https://vikashaiai.netlify.app';
+const API_BASE =
+  typeof window !== 'undefined' &&
+  (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
+    ? LIVE_NETLIFY_SITE
+    : '';
+const CHAT_API = `${API_BASE}/.netlify/functions/personalChat`;
+const ADMIN_API = `${API_BASE}/.netlify/functions/adminDashboard`;
 
 // Fallback custom knowledge (यदि अलग फाइल न बनी हो तब भी ऐप बिना किसी रुकावट के चलेगा)
 const DEFAULT_CUSTOM_KNOWLEDGE = {
