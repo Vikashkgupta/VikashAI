@@ -1,13 +1,34 @@
 <!doctype html>
-<html lang="en">
+<html lang="hi">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vikash.jpg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vikash AI</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Vikash AI — Personal Assistant</title>
+    <link rel="icon" type="image/jpeg" href="/vikash.jpg" />
   </head>
-  <body>
+  <body class="bg-white text-neutral-900 antialiased">
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
+    <script>
+      // Automatically removes Netlify's injected "Powered by Netlify" Shadow DOM badge on mobile
+      (function () {
+        const removeNetlifyBadge = () => {
+          document.querySelectorAll('a[href*="netlify.com"], iframe[src*="netlify"]').forEach((el) => el.remove());
+          document.querySelectorAll('body > div, body > aside, body > netlify-drawer').forEach((el) => {
+            if (el.id === 'root') return;
+            const shadowText = el.shadowRoot ? el.shadowRoot.textContent || '' : '';
+            const plainText = el.textContent || '';
+            if (/powered by netlify/i.test(shadowText + ' ' + plainText)) {
+              el.remove();
+            }
+          });
+        };
+        removeNetlifyBadge();
+        new MutationObserver(removeNetlifyBadge).observe(document.documentElement, {
+          childList: true,
+          subtree: true
+        });
+      })();
+    </script>
   </body>
 </html>

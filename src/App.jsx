@@ -900,6 +900,7 @@ export default function App() {
 
       {/* 3. BOTTOM INPUT DOCK */}
       <footer className="flex-none px-3 sm:px-4 py-3 bg-white max-w-3xl w-full mx-auto">
+        {/* Suggestion chips commented out as requested
         <div className="flex items-center gap-2 overflow-x-auto pb-2.5 text-xs text-neutral-600" style={{ scrollbarWidth: 'none' }}>
           {chips.map((chip, idx) => (
             <button
@@ -912,6 +913,7 @@ export default function App() {
             </button>
           ))}
         </div>
+        */}
 
         <form
           onSubmit={(e) => {
