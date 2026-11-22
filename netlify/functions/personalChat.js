@@ -1,7 +1,10 @@
 // File: netlify/functions/personalChat.js
-// Vikash AI — Complete Personal Assistant Backend (Netlify Functions 2.0 Web-Standard SSE + Buffered Rescue)
-// Features: Dynamic 1-line welcome, GitHub Auto-Sync, Instagram Graph API (followers/posts/likes/comments),
-// Strategic Google Search grounding, Live IST Date/Time, Device Battery/Weather, & Supabase Session Logging.
+// Vikash AI — Fast, Timeout-Safe Personal Assistant Backend (Netlify Functions 2.0 SSE)
+// Fixes 504 Gateway Timeout:
+// 1. Strict fetchWithTimeout() on EVERY external call (Gemini, GitHub, Instagram, Supabase)
+// 2. Parallel pre-fetching (Models + GitHub + Instagram run together in < 1.8s)
+// 3. buildValidGeminiContents() fixes HTTP 400 caused by leading welcome (model) turn
+// 4. Uses `x-goog-api-key` header for Google AI Studio `AQ.` keys (same as working aiChat.js)
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -11,6 +14,7 @@ const CORS_HEADERS = {
 
 let cachedModels = null;
 let cachedModelsAt = 0;
+let cachedWorkingModel = null;
 
 let cachedGithub = null;
 let cachedGithubAt = 0;
@@ -23,6 +27,16 @@ function jsonResponse(status, body) {
     status,
     headers: { 'Content-Type': 'application/json', ...CORS_HEADERS }
   });
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 4000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function getISTDateTime() {
@@ -43,50 +57,76 @@ function getISTDateTime() {
   return { dateStr, timeStr };
 }
 
+function extractVisibleTextFromParts(parts) {
+  if (!Array.isArray(parts)) return '';
+  return parts
+    .filter((p) => p && typeof p.text === 'string' && !p.thought)
+    .map((p) => p.text)
+    .join('');
+}
+
 async function discoverGeminiModels(apiKey) {
   const now = Date.now();
   if (cachedModels && now - cachedModelsAt < 10 * 60 * 1000) {
-    return cachedModels;
+    return cachedWorkingModel
+      ? [cachedWorkingModel, ...cachedModels.filter((m) => m !== cachedWorkingModel)]
+      : cachedModels;
   }
+
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`);
-    if (!res.ok) throw new Error('Model list failed');
-    const data = await res.json();
-    const valid = (data.models || [])
-      .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
-      .map((m) => m.name.replace(/^models\//, ''))
-      .filter(
-        (name) =>
-          !/embedding|imagen|veo|aqa|tts|audio|robotics|thinking|learnlm|2\.5-pro|2\.5-flash|exp/i.test(name) &&
-          /gemini/i.test(name)
-      );
+    const res = await fetchWithTimeout(
+      'https://generativelanguage.googleapis.com/v1beta/models',
+      { headers: { 'x-goog-api-key': apiKey } },
+      1600
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const valid = (data.models || [])
+        .filter(
+          (m) =>
+            Array.isArray(m.supportedGenerationMethods) &&
+            m.supportedGenerationMethods.includes('generateContent')
+        )
+        .map((m) => m.name.replace(/^models\//, ''))
+        .filter(
+          (name) =>
+            !/embedding|imagen|veo|aqa|tts|audio|robotics|thinking|learnlm|2\.5-pro|2\.5-flash|exp/i.test(name) &&
+            /gemini/i.test(name)
+        );
 
-    const rankModel = (n) => {
-      const low = n.toLowerCase();
-      if (low.startsWith('gemini-3') && low.includes('flash-lite')) return 100;
-      if (low.startsWith('gemini-3') && low.includes('flash') && !low.includes('preview')) return 96;
-      if (low.startsWith('gemini-3') && low.includes('flash')) return 92;
-      if (low === 'gemini-flash-lite-latest') return 88;
-      if (low === 'gemini-flash-latest') return 85;
-      if (low.startsWith('gemini-2.0-flash-lite')) return 80;
-      if (low.startsWith('gemini-2.0-flash')) return 75;
-      return 50;
-    };
+      const rankModel = (n) => {
+        const low = n.toLowerCase();
+        if (low.startsWith('gemini-3') && low.includes('flash-lite')) return 100;
+        if (low.startsWith('gemini-3') && low.includes('flash') && !low.includes('preview')) return 96;
+        if (low.startsWith('gemini-3') && low.includes('flash')) return 92;
+        if (low === 'gemini-flash-lite-latest') return 88;
+        if (low === 'gemini-flash-latest') return 85;
+        if (low.startsWith('gemini-2.0-flash-lite')) return 80;
+        if (low.startsWith('gemini-2.0-flash')) return 75;
+        return 50;
+      };
 
-    const prioritized = valid.sort((a, b) => rankModel(b) - rankModel(a));
-    if (prioritized.length > 0) {
-      cachedModels = prioritized;
-      cachedModelsAt = now;
-      return prioritized;
+      const prioritized = valid.sort((a, b) => rankModel(b) - rankModel(a));
+      if (prioritized.length > 0) {
+        cachedModels = prioritized;
+        cachedModelsAt = now;
+        return cachedWorkingModel
+          ? [cachedWorkingModel, ...prioritized.filter((m) => m !== cachedWorkingModel)]
+          : prioritized;
+      }
     }
   } catch {}
-  return [
+
+  const fallbackList = [
     'gemini-3.5-flash-lite',
     'gemini-3.8-flash',
     'gemini-flash-lite-latest',
     'gemini-flash-latest',
     'gemini-2.0-flash-lite'
   ];
+  return cachedWorkingModel
+    ? [cachedWorkingModel, ...fallbackList.filter((m) => m !== cachedWorkingModel)]
+    : fallbackList;
 }
 
 async function fetchGitHubData() {
@@ -108,14 +148,14 @@ async function fetchGitHubData() {
 
   try {
     const [profileRes, reposRes, readmeRes] = await Promise.all([
-      fetch(`https://api.github.com/users/${encodeURIComponent(username)}`, { headers }),
-      fetch(`https://api.github.com/users/${encodeURIComponent(username)}/repos?sort=updated&per_page=15`, { headers }),
-      fetch(`https://raw.githubusercontent.com/${encodeURIComponent(username)}/${encodeURIComponent(username)}/main/README.md`).catch(() => null)
+      fetchWithTimeout(`https://api.github.com/users/${encodeURIComponent(username)}`, { headers }, 1800).catch(() => null),
+      fetchWithTimeout(`https://api.github.com/users/${encodeURIComponent(username)}/repos?sort=updated&per_page=15`, { headers }, 1800).catch(() => null),
+      fetchWithTimeout(`https://raw.githubusercontent.com/${encodeURIComponent(username)}/${encodeURIComponent(username)}/main/README.md`, {}, 1200).catch(() => null)
     ]);
 
-    const profile = profileRes.ok ? await profileRes.json() : null;
-    const rawRepos = reposRes.ok ? await reposRes.json() : [];
-    const readmeText = readmeRes && readmeRes.ok ? (await readmeRes.text()).slice(0, 1500) : '';
+    const profile = profileRes && profileRes.ok ? await profileRes.json() : null;
+    const rawRepos = reposRes && reposRes.ok ? await reposRes.json() : [];
+    const readmeText = readmeRes && readmeRes.ok ? (await readmeRes.text()).slice(0, 1200) : '';
 
     const repos = Array.isArray(rawRepos)
       ? rawRepos
@@ -132,21 +172,23 @@ async function fetchGitHubData() {
           }))
       : [];
 
-    cachedGithub = {
-      username,
-      name: profile?.name || username,
-      bio: profile?.bio || '',
-      avatarUrl: profile?.avatar_url || '',
-      followers: profile?.followers ?? 0,
-      publicRepos: profile?.public_repos ?? repos.length,
-      htmlUrl: profile?.html_url || `https://github.com/${username}`,
-      twitterUsername: profile?.twitter_username || '',
-      blog: profile?.blog || '',
-      location: profile?.location || '',
-      repos,
-      readmeSnippet: readmeText
-    };
-    cachedGithubAt = now;
+    if (profile || repos.length > 0) {
+      cachedGithub = {
+        username,
+        name: profile?.name || username,
+        bio: profile?.bio || '',
+        avatarUrl: profile?.avatar_url || '',
+        followers: profile?.followers ?? 0,
+        publicRepos: profile?.public_repos ?? repos.length,
+        htmlUrl: profile?.html_url || `https://github.com/${username}`,
+        twitterUsername: profile?.twitter_username || '',
+        blog: profile?.blog || '',
+        location: profile?.location || '',
+        repos,
+        readmeSnippet: readmeText
+      };
+      cachedGithubAt = now;
+    }
     return cachedGithub;
   } catch {
     return cachedGithub;
@@ -167,10 +209,13 @@ async function fetchInstagramData() {
     const profileUrl = `https://graph.facebook.com/v21.0/${encodeURIComponent(userId)}?fields=username,name,biography,followers_count,follows_count,media_count&access_token=${encodeURIComponent(token)}`;
     const mediaUrl = `https://graph.facebook.com/v21.0/${encodeURIComponent(userId)}/media?fields=id,caption,media_type,permalink,timestamp,like_count,comments_count&limit=10&access_token=${encodeURIComponent(token)}`;
 
-    const [pRes, mRes] = await Promise.all([fetch(profileUrl), fetch(mediaUrl)]);
-    if (!pRes.ok) return null;
+    const [pRes, mRes] = await Promise.all([
+      fetchWithTimeout(profileUrl, {}, 1800).catch(() => null),
+      fetchWithTimeout(mediaUrl, {}, 1800).catch(() => null)
+    ]);
+    if (!pRes || !pRes.ok) return cachedInstagram;
     const profile = await pRes.json();
-    const mediaJson = mRes.ok ? await mRes.json() : { data: [] };
+    const mediaJson = mRes && mRes.ok ? await mRes.json() : { data: [] };
 
     cachedInstagram = {
       username: profile.username || '',
@@ -199,7 +244,10 @@ async function fetchInstagramData() {
 }
 
 function getSocialLinks(ghData, igData) {
-  const ghUrl = process.env.GITHUB_URL || ghData?.htmlUrl || (process.env.GITHUB_USERNAME ? `https://github.com/${process.env.GITHUB_USERNAME}` : '');
+  const ghUrl =
+    process.env.GITHUB_URL ||
+    ghData?.htmlUrl ||
+    (process.env.GITHUB_USERNAME ? `https://github.com/${process.env.GITHUB_USERNAME}` : '');
   const igUrl = process.env.IG_URL || (igData?.username ? `https://instagram.com/${igData.username}` : '');
   const twitterUrl =
     process.env.TWITTER_URL ||
@@ -225,20 +273,24 @@ function getSocialLinks(ghData, igData) {
   };
 }
 
-async function supabaseRequest(path, options = {}) {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+async function supabaseRequest(path, options = {}, timeoutMs = 1500) {
+  const url = String(process.env.SUPABASE_URL || '').trim();
+  const key = String(process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
   if (!url || !key) return null;
   try {
-    const res = await fetch(`${url.replace(/\/$/, '')}/rest/v1/${path}`, {
-      ...options,
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
-        ...(options.headers || {})
-      }
-    });
+    const res = await fetchWithTimeout(
+      `${url.replace(/\/$/, '')}/rest/v1/${path}`,
+      {
+        ...options,
+        headers: {
+          apikey: key,
+          Authorization: `Bearer ${key}`,
+          'Content-Type': 'application/json',
+          ...(options.headers || {})
+        }
+      },
+      timeoutMs
+    );
     if (!res.ok) return null;
     const text = await res.text();
     return text ? JSON.parse(text) : null;
@@ -248,8 +300,15 @@ async function supabaseRequest(path, options = {}) {
 }
 
 async function saveChatTurnToSupabase({ sessionId, visitorName, deviceInfo, city, userMsg, botReply }) {
-  if (!sessionId) return;
-  const existing = await supabaseRequest(`personal_chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=conversation,message_count`);
+  const url = String(process.env.SUPABASE_URL || '').trim();
+  const key = String(process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
+  if (!sessionId || !url || !key) return;
+
+  const existing = await supabaseRequest(
+    `personal_chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=conversation,message_count`,
+    {},
+    1200
+  );
   const prevConv = Array.isArray(existing?.[0]?.conversation) ? existing[0].conversation : [];
   const nowIso = new Date().toISOString();
   const updatedConv = [
@@ -258,19 +317,57 @@ async function saveChatTurnToSupabase({ sessionId, visitorName, deviceInfo, city
     { role: 'model', text: botReply, ts: nowIso }
   ].slice(-40);
 
-  await supabaseRequest('personal_chat_sessions?on_conflict=session_id', {
-    method: 'POST',
-    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-    body: JSON.stringify({
-      session_id: sessionId,
-      visitor_name: visitorName || 'Visitor',
-      device_info: deviceInfo || '',
-      city: city || '',
-      message_count: (existing?.[0]?.message_count || 0) + 1,
-      conversation: updatedConv,
-      last_active: nowIso
-    })
-  });
+  await supabaseRequest(
+    'personal_chat_sessions?on_conflict=session_id',
+    {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        visitor_name: visitorName || 'Visitor',
+        device_info: deviceInfo || '',
+        city: city || '',
+        message_count: (existing?.[0]?.message_count || 0) + 1,
+        conversation: updatedConv,
+        last_active: nowIso
+      })
+    },
+    1200
+  );
+}
+
+// Ensures Gemini `contents` ALWAYS starts with `role: "user"` and strictly alternates user/model
+function buildValidGeminiContents(rawHistory, userMessage) {
+  const cleaned = [];
+  const list = Array.isArray(rawHistory) ? rawHistory.slice(-8) : [];
+
+  for (const h of list) {
+    if (!h) continue;
+    const role = h.role === 'user' ? 'user' : 'model';
+    const text = String(h.text || h.content || '').trim();
+    if (!text) continue;
+    if (text.includes('Something went wrong')) continue;
+
+    // Gemini rejects histories starting with `model` (like welcome message)
+    if (cleaned.length === 0 && role === 'model') continue;
+
+    if (cleaned.length > 0 && cleaned[cleaned.length - 1].role === role) {
+      cleaned[cleaned.length - 1].parts[0].text += '\n' + text;
+    } else {
+      cleaned.push({ role, parts: [{ text }] });
+    }
+  }
+
+  const finalText = String(userMessage || 'Hi').trim();
+  if (cleaned.length > 0 && cleaned[cleaned.length - 1].role === 'user') {
+    if (cleaned[cleaned.length - 1].parts[0].text !== finalText) {
+      cleaned[cleaned.length - 1].parts[0].text += '\n' + finalText;
+    }
+  } else {
+    cleaned.push({ role: 'user', parts: [{ text: finalText }] });
+  }
+
+  return cleaned;
 }
 
 function shouldEnableGoogleSearch(message) {
@@ -304,7 +401,7 @@ VISITOR DEVICE CONTEXT:
 - Network: ${clientDevice?.networkText || 'Online'}
 - GPS/Location: ${clientDevice?.locationText || 'Not shared'}
 
-VIKASH CUSTOM KNOWLEDGE (Written by Vikash himself):
+VIKASH CUSTOM KNOWLEDGE:
 ${JSON.stringify(customKnowledge || {}, null, 2)}
 
 LIVE GITHUB PROFILE & REPOSITORIES:
@@ -329,7 +426,7 @@ VERIFIED SOCIAL & CONTACT LINKS:
 RULES:
 1. Answer visitor questions about Vikash, his projects, skills, GitHub, Instagram stats (followers, posts, likes, comments), social links, weather, news, date/time, and device battery accurately.
 2. Never invent fake numbers or fake URLs. Only use URLs listed above or from Google Search results.
-3. For general news/weather/trending queries, use Google Search results and keep answers crisp.`;
+3. Keep answers crisp and natural.`;
 }
 
 function selectContextActionButtons(message, socialLinks) {
@@ -386,14 +483,32 @@ export default async (req) => {
     return new Response('', { status: 204, headers: CORS_HEADERS });
   }
 
-  // GET: Restore session history from Supabase
+  // GET: Health Check (?health=1) or Restore Session History (?sessionId=...)
   if (req.method === 'GET') {
     const url = new URL(req.url);
+    if (url.searchParams.get('health') === '1') {
+      const apiKey = String(process.env.GEMINI_API_KEY || '').trim();
+      const [models, gh] = await Promise.all([
+        apiKey ? discoverGeminiModels(apiKey) : Promise.resolve([]),
+        fetchGitHubData()
+      ]);
+      return jsonResponse(200, {
+        ok: true,
+        hasGeminiKey: Boolean(apiKey),
+        topModels: models.slice(0, 4),
+        githubReposLoaded: gh?.repos?.length ?? 0,
+        instagramConfigured: Boolean(process.env.IG_ACCESS_TOKEN && process.env.IG_USER_ID),
+        supabaseConfigured: Boolean(process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY))
+      });
+    }
+
     const sessionId = url.searchParams.get('sessionId');
     if (!sessionId) return jsonResponse(400, { success: false, error: 'Missing sessionId' });
 
     const rows = await supabaseRequest(
-      `personal_chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=conversation,visitor_name`
+      `personal_chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=conversation,visitor_name`,
+      {},
+      1500
     );
     return jsonResponse(200, {
       success: true,
@@ -417,34 +532,38 @@ export default async (req) => {
     return jsonResponse(500, { success: false, isError: true, error: 'GEMINI_API_KEY is missing in Netlify env.' });
   }
 
-  const models = await discoverGeminiModels(apiKey);
   const ist = getISTDateTime();
 
-  // Live 1-line dynamic server welcome (never hardcoded)
+  // Fast 1-line dynamic server welcome (strict 3.5s cap so it never times out)
   if (body.isWelcomeGreeting) {
-    const prompt = `Generate a fresh, warm, 1-line Hindi/Hinglish welcome greeting (max 12 words) for "Vikash AI" (Personal Assistant of Vikash Kumar Gupta). Today is ${ist.dateStr}, ${ist.timeStr}. Do not repeat clichés, no markdown, just 1 crisp friendly line inviting the visitor to ask about Vikash, his projects, or anything online.`;
+    const models = await discoverGeminiModels(apiKey);
+    const seed = Math.floor(1000 + Math.random() * 9000);
+    const prompt = `Generate a fresh, warm, 1-line Hindi/Hinglish welcome greeting (max 12 words, seed ${seed}) for "Vikash AI" (Personal Assistant of Vikash Kumar Gupta). Today is ${ist.dateStr}, ${ist.timeStr}. No markdown, just 1 crisp friendly line.`;
 
-    for (const model of models.slice(0, 3)) {
+    for (const model of models.slice(0, 2)) {
       try {
-        const res = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
+        const res = await fetchWithTimeout(
+          `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
           {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey
+            },
             body: JSON.stringify({
               contents: [{ role: 'user', parts: [{ text: prompt }] }],
-              generationConfig: { temperature: 1.0, maxOutputTokens: 60 }
+              generationConfig: { temperature: 0.95, maxOutputTokens: 60 }
             })
-          }
+          },
+          3500
         );
         if (res.ok) {
           const data = await res.json();
-          const welcome = data?.candidates?.[0]?.content?.parts
-            ?.filter((p) => p && typeof p.text === 'string' && !p.thought)
-            .map((p) => p.text)
-            .join('')
-            .trim();
-          if (welcome) return jsonResponse(200, { success: true, welcome });
+          const welcome = extractVisibleTextFromParts(data?.candidates?.[0]?.content?.parts).trim();
+          if (welcome) {
+            cachedWorkingModel = model;
+            return jsonResponse(200, { success: true, welcome });
+          }
         }
       } catch {}
     }
@@ -459,7 +578,13 @@ export default async (req) => {
     return jsonResponse(400, { success: false, isError: true, error: 'Empty message' });
   }
 
-  const [ghData, igData] = await Promise.all([fetchGitHubData(), fetchInstagramData()]);
+  // Run Models discovery + GitHub + Instagram IN PARALLEL (max ~1.8s total!)
+  const [models, ghData, igData] = await Promise.all([
+    discoverGeminiModels(apiKey),
+    fetchGitHubData(),
+    fetchInstagramData()
+  ]);
+
   const socialLinks = getSocialLinks(ghData, igData);
   const systemInstruction = buildSystemPrompt({
     customKnowledge: body.customKnowledge,
@@ -470,27 +595,9 @@ export default async (req) => {
     ist
   });
 
-  const history = Array.isArray(body.history)
-    ? body.history
-        .filter((h) => h && h.text)
-        .slice(-8)
-        .map((h) => ({
-          role: h.role === 'user' ? 'user' : 'model',
-          parts: [{ text: String(h.text) }]
-        }))
-    : [];
-
-  const contents = [...history, { role: 'user', parts: [{ text: userMessage }] }];
+  // Always start with role: 'user' and strictly alternate user/model
+  const contents = buildValidGeminiContents(body.history, userMessage);
   const useSearch = shouldEnableGoogleSearch(userMessage);
-
-  const geminiPayload = {
-    systemInstruction: { parts: [{ text: systemInstruction }] },
-    contents,
-    generationConfig: { temperature: 0.7, maxOutputTokens: 1024 }
-  };
-  if (useSearch) {
-    geminiPayload.tools = [{ google_search: {} }];
-  }
 
   const actionButtons = selectContextActionButtons(userMessage, socialLinks);
   const recommendedProjects = selectRelevantProjects(userMessage, ghData);
@@ -500,7 +607,7 @@ export default async (req) => {
     '🔗 सारे Social Links दो'
   ];
 
-  // Stream via SSE with Buffered Rescue Fallback
+  // Open SSE response immediately so Netlify sends headers fast and never hits 504
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -508,92 +615,117 @@ export default async (req) => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
       };
 
+      // Send an immediate SSE comment ping so the gateway receives the first byte right away
+      controller.enqueue(encoder.encode(': ping\n\n'));
+
       let fullReply = '';
       let succeeded = false;
+      const debugErrors = [];
 
-      for (const model of models.slice(0, 3)) {
-        try {
-          const gRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(geminiPayload)
-            }
-          );
+      // Try up to 2 top models for true SSE streaming (with strict connect timeout)
+      for (const model of models.slice(0, 2)) {
+        const attempts = useSearch ? [true, false] : [false];
 
-          if (!gRes.ok || !gRes.body) continue;
-
-          const reader = gRes.body.getReader();
-          const decoder = new TextDecoder();
-          let buf = '';
-
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            buf += decoder.decode(value, { stream: true });
-            const chunks = buf.split('\n\n');
-            buf = chunks.pop() || '';
-
-            for (const chunk of chunks) {
-              const line = chunk.split('\n').find((l) => l.startsWith('data:'));
-              if (!line) continue;
-              const raw = line.replace(/^data:\s*/, '').trim();
-              if (!raw || raw === '[DONE]') continue;
-              try {
-                const parsed = JSON.parse(raw);
-                const textPart =
-                  parsed?.candidates?.[0]?.content?.parts
-                    ?.filter((p) => p && typeof p.text === 'string' && !p.thought)
-                    .map((p) => p.text)
-                    .join('') || '';
-                if (textPart) {
-                  fullReply += textPart;
-                  sendEvent({ type: 'delta', text: textPart });
-                }
-              } catch {}
-            }
+        for (const withSearch of attempts) {
+          const payload = {
+            systemInstruction: { parts: [{ text: systemInstruction }] },
+            contents,
+            generationConfig: { temperature: withSearch ? 0.3 : 0.65, maxOutputTokens: 1024 }
+          };
+          if (withSearch) {
+            payload.tools = [{ google_search: {} }];
           }
 
-          if (fullReply.trim().length > 0) {
-            succeeded = true;
-            break;
-          }
-        } catch {}
-      }
-
-      if (!succeeded) {
-        // Rescue fallback via standard generateContent if SSE stream failed
-        for (const rescueModel of models.slice(0, 3)) {
           try {
-            const rRes = await fetch(
-              `https://generativelanguage.googleapis.com/v1beta/models/${rescueModel}:generateContent?key=${encodeURIComponent(apiKey)}`,
+            const gRes = await fetchWithTimeout(
+              `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`,
               {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  systemInstruction: { parts: [{ text: systemInstruction }] },
-                  contents,
-                  generationConfig: { temperature: 0.6, maxOutputTokens: 1024 }
-                })
-              }
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-goog-api-key': apiKey
+                },
+                body: JSON.stringify(payload)
+              },
+              withSearch ? 6500 : 5000
             );
-            if (rRes.ok) {
-              const rData = await rRes.json();
-              const rText =
-                rData?.candidates?.[0]?.content?.parts
-                  ?.filter((p) => p && typeof p.text === 'string' && !p.thought)
-                  .map((p) => p.text)
-                  .join('')
-                  .trim() || '';
-              if (rText) {
-                fullReply = rText;
-                succeeded = true;
-                sendEvent({ type: 'delta', text: fullReply });
-                break;
+
+            if (!gRes.ok || !gRes.body) {
+              const errTxt = await gRes.text().catch(() => '');
+              debugErrors.push(`${model}(${gRes.status}): ${errTxt.slice(0, 80)}`);
+              continue;
+            }
+
+            const reader = gRes.body.getReader();
+            const decoder = new TextDecoder();
+            let buf = '';
+
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
+              buf += decoder.decode(value, { stream: true });
+              const chunks = buf.split('\n\n');
+              buf = chunks.pop() || '';
+
+              for (const chunk of chunks) {
+                const line = chunk.split('\n').find((l) => l.startsWith('data:'));
+                if (!line) continue;
+                const raw = line.replace(/^data:\s*/, '').trim();
+                if (!raw || raw === '[DONE]') continue;
+                try {
+                  const parsed = JSON.parse(raw);
+                  const textPart = extractVisibleTextFromParts(parsed?.candidates?.[0]?.content?.parts);
+                  if (textPart) {
+                    fullReply += textPart;
+                    sendEvent({ type: 'delta', text: textPart });
+                  }
+                } catch {}
               }
             }
-          } catch {}
+
+            if (fullReply.trim().length > 0) {
+              cachedWorkingModel = model;
+              succeeded = true;
+              break;
+            }
+          } catch (err) {
+            debugErrors.push(`${model}: ${err.message}`);
+          }
+        }
+        if (succeeded) break;
+      }
+
+      // Single fast buffered rescue if SSE failed
+      if (!succeeded && models[0]) {
+        try {
+          const rRes = await fetchWithTimeout(
+            `https://generativelanguage.googleapis.com/v1beta/models/${models[0]}:generateContent`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': apiKey
+              },
+              body: JSON.stringify({
+                systemInstruction: { parts: [{ text: systemInstruction }] },
+                contents,
+                generationConfig: { temperature: 0.6, maxOutputTokens: 1024 }
+              })
+            },
+            4500
+          );
+          if (rRes.ok) {
+            const rData = await rRes.json();
+            const rText = extractVisibleTextFromParts(rData?.candidates?.[0]?.content?.parts).trim();
+            if (rText) {
+              fullReply = rText;
+              cachedWorkingModel = models[0];
+              succeeded = true;
+              sendEvent({ type: 'delta', text: fullReply });
+            }
+          }
+        } catch (err) {
+          debugErrors.push(`rescue: ${err.message}`);
         }
       }
 
@@ -601,7 +733,8 @@ export default async (req) => {
         sendEvent({
           type: 'done',
           isError: true,
-          reply: 'Something went wrong, please try again.'
+          reply: 'Something went wrong, please try again.',
+          debug: debugErrors.join(' | ').slice(0, 220)
         });
         controller.close();
         return;
