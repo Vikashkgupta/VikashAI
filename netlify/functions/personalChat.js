@@ -291,7 +291,10 @@ function getSocialLinks(ghData, igData) {
   const whatsappUrl = whatsappRaw ? `https://wa.me/${whatsappRaw}` : '';
   const phoneRaw = String(process.env.PUBLIC_PHONE || '').trim();
   const phoneUrl = phoneRaw ? `tel:${phoneRaw.replace(/\s+/g, '')}` : '';
-  const email = String(process.env.CONTACT_EMAIL || '').trim();
+  const email = String(process.env.CONTACT_EMAIL || 'vikashkumargupta1000@gmail.com').trim();
+  const linkedinUrl = String(process.env.LINKEDIN_URL || 'https://www.linkedin.com/in/vikash-kumar-gupta-505899295').trim();
+  const portfolioUrl = String(process.env.PORTFOLIO_URL || ghData?.blog || 'https://vikashkumargupta.netlify.app').trim();
+  const linktreeUrl = String(process.env.LINKTREE_URL || 'https://linktr.ee/vikashgupta').trim();
 
   return {
     github: ghUrl,
@@ -299,6 +302,9 @@ function getSocialLinks(ghData, igData) {
     twitter: twitterUrl,
     discord: discordUrl,
     facebook: facebookUrl,
+    linkedin: linkedinUrl,
+    portfolio: portfolioUrl,
+    linktree: linktreeUrl,
     whatsapp: whatsappUrl,
     phone: phoneRaw,
     phoneUrl,
@@ -311,24 +317,33 @@ async function supabaseRequest(path, options = {}) {
   const key = String(process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
   if (!url || !key) return null;
 
+  const authHeaders = {
+    apikey: key,
+    'Content-Type': 'application/json',
+    ...(options.headers || {})
+  };
+  if (key.startsWith('eyJ')) {
+    authHeaders.Authorization = `Bearer ${key}`;
+  }
+
   try {
     const res = await fetchWithTimeout(
       `${url.replace(/\/$/, '')}/rest/v1/${path}`,
       {
         ...options,
-        headers: {
-          apikey: key,
-          Authorization: `Bearer ${key}`,
-          'Content-Type': 'application/json',
-          ...(options.headers || {})
-        }
+        headers: authHeaders
       },
-      1800
+      2500
     );
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const errTxt = await res.text().catch(() => '');
+      console.error(`[personalChat] Supabase HTTP ${res.status}:`, errTxt.slice(0, 180));
+      return null;
+    }
     const text = await res.text();
     return text ? JSON.parse(text) : null;
-  } catch {
+  } catch (err) {
+    console.error('[personalChat] Supabase network error:', err?.message);
     return null;
   }
 }
@@ -438,6 +453,9 @@ LIVE INSTAGRAM CREATOR STATS (Official Graph API):
 ${igSummary}
 
 VERIFIED SOCIAL & CONTACT LINKS:
+- Portfolio Website: ${socialLinks.portfolio || 'Not set'}
+- Linktree (All Links): ${socialLinks.linktree || 'Not set'}
+- LinkedIn: ${socialLinks.linkedin || 'Not set'}
 - GitHub: ${socialLinks.github || 'Not set'}
 - Instagram: ${socialLinks.instagram || 'Not set'}
 - Twitter/X: ${socialLinks.twitter || 'Not set'}
@@ -472,6 +490,15 @@ function selectContextActionButtons(message, socialLinks) {
   if (/facebook|fb|फेसबुक/i.test(m) && socialLinks.facebook) {
     btns.push({ label: 'Facebook', href: socialLinks.facebook, type: 'FACEBOOK' });
   }
+  if (/linkedin|लिंक्डइन|resume|cv|intern|hire/i.test(m) && socialLinks.linkedin) {
+    btns.push({ label: 'LinkedIn Profile', href: socialLinks.linkedin, type: 'LINKEDIN' });
+  }
+  if (/portfolio|website|साइट|पोर्टफोलियो/i.test(m) && socialLinks.portfolio) {
+    btns.push({ label: 'Portfolio Website', href: socialLinks.portfolio, type: 'PORTFOLIO' });
+  }
+  if (/linktree|linktr/i.test(m) && socialLinks.linktree) {
+    btns.push({ label: 'All Links (Linktree)', href: socialLinks.linktree, type: 'LINKTREE' });
+  }
   if (/whatsapp|व्हाट्सएप|contact|संपर्क|बात|hire|freelance|collab/i.test(m) && socialLinks.whatsapp) {
     btns.push({ label: 'WhatsApp पर मैसेज करें', href: socialLinks.whatsapp, type: 'WHATSAPP' });
   }
@@ -480,8 +507,9 @@ function selectContextActionButtons(message, socialLinks) {
   }
   if (/social|लिंक|link|सब|all|जुड़/i.test(m) && btns.length === 0) {
     if (socialLinks.github) btns.push({ label: 'GitHub', href: socialLinks.github, type: 'GITHUB' });
+    if (socialLinks.linkedin) btns.push({ label: 'LinkedIn', href: socialLinks.linkedin, type: 'LINKEDIN' });
     if (socialLinks.instagram) btns.push({ label: 'Instagram', href: socialLinks.instagram, type: 'INSTAGRAM' });
-    if (socialLinks.whatsapp) btns.push({ label: 'WhatsApp', href: socialLinks.whatsapp, type: 'WHATSAPP' });
+    if (socialLinks.linktree) btns.push({ label: 'All Links', href: socialLinks.linktree, type: 'LINKTREE' });
   }
 
   return btns.slice(0, 3);

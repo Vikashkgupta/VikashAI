@@ -21,20 +21,28 @@ async function supabaseFetch(path, options = {}) {
   const key = String(process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
   if (!url || !key) return null;
 
+  const authHeaders = {
+    apikey: key,
+    'Content-Type': 'application/json',
+    ...(options.headers || {})
+  };
+  if (key.startsWith('eyJ')) {
+    authHeaders.Authorization = `Bearer ${key}`;
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 3000);
   try {
     const res = await fetch(`${url.replace(/\/$/, '')}/rest/v1/${path}`, {
       ...options,
       signal: controller.signal,
-      headers: {
-        apikey: key,
-        Authorization: `Bearer ${key}`,
-        'Content-Type': 'application/json',
-        ...(options.headers || {})
-      }
+      headers: authHeaders
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const errTxt = await res.text().catch(() => '');
+      console.error(`[adminDashboard] Supabase HTTP ${res.status}:`, errTxt.slice(0, 180));
+      return null;
+    }
     const text = await res.text();
     return text ? JSON.parse(text) : null;
   } catch (err) {
