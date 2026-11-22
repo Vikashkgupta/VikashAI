@@ -1,8 +1,9 @@
-// File: src/App.jsx (Vikash AI — Personal Assistant)
-// Complete, standalone runnable React + Tailwind CSS component
+// File: src/App.jsx
+// Vikash AI — Personal Assistant (React + Tailwind CSS + Netlify Functions)
+// Includes full structured error handling (`console.error` diagnostics) and clean monochrome UI.
 import React, { useState, useEffect, useRef } from 'react';
+import { VIKASH_CUSTOM_KNOWLEDGE } from './data/customKnowledge';
 
-// 👉 अपनी फोटो public/vikash.jpg में रखें (अगर फोटो न मिले तो अपने-आप "V" दिखेगा)
 const VIKASH_AVATAR_URL = '/vikash.jpg';
 const LIVE_NETLIFY_SITE = 'https://vikashaiai.netlify.app';
 const API_BASE =
@@ -12,26 +13,6 @@ const API_BASE =
     : '';
 const CHAT_API = `${API_BASE}/.netlify/functions/personalChat`;
 const ADMIN_API = `${API_BASE}/.netlify/functions/adminDashboard`;
-
-// Fallback custom knowledge (यदि अलग फाइल न बनी हो तब भी ऐप बिना किसी रुकावट के चलेगा)
-const DEFAULT_CUSTOM_KNOWLEDGE = {
-  aboutMe:
-    'नाम: Vikash Kumar Gupta (विकास कुमार गुप्ता) | भूमिका: Full-Stack Web Developer & AI Builder | शहर: Mairwa (Siwan), Bihar, India',
-  skills: [
-    'React.js',
-    'JavaScript (ES6+)',
-    'Tailwind CSS',
-    'Node.js & Netlify Functions',
-    'Supabase (PostgreSQL)',
-    'Gemini AI & REST APIs'
-  ],
-  highlights: [
-    'KshirSagar Sweets Corner के लिए फुल-स्टैक वेब ऐप और AI असिस्टेंट बनाया।',
-    'GitHub और Instagram Graph API से जुड़ा लाइव पर्सनल AI असिस्टेंट बनाया।'
-  ],
-  extraNotes:
-    'नए टेक आइडियाज़, वेब ऐप्स और AI प्रोजेक्ट्स पर काम करने के लिए हमेशा तैयार।'
-};
 
 const INITIAL_CHIPS = [
   '🚀 Vikash के प्रोजेक्ट्स दिखाओ',
@@ -50,7 +31,8 @@ function getOrCreateSessionId() {
       localStorage.setItem(key, id);
     }
     return id;
-  } catch {
+  } catch (err) {
+    console.warn('[Vikash AI Storage Warning]:', err);
     return 'VK-GUEST';
   }
 }
@@ -96,7 +78,10 @@ function renderInlineMarkdown(rawText) {
     }
   );
 
-  const withBare = withMd.replace(/(https?:\/\/[^\s<>"')\]]+)/g, (url) => {
+  // Strip accidental spaces inside URLs (e.g., `https://instagram.com/ vikash`)
+  const cleanedUrlText = withMd.replace(/(https?:\/\/[^\s<>"')\]]+)\s+([a-zA-Z0-9_.-]+)/g, '$1$2');
+
+  const withBare = cleanedUrlText.replace(/(https?:\/\/[^\s<>"')\]]+)/g, (url) => {
     const cleaned = url.replace(/[.,!?;:]+$/, '');
     const trailing = url.slice(cleaned.length);
     const idx = placeholders.length;
@@ -188,7 +173,6 @@ export default function App() {
   // Secret 5-tap Admin Monitoring Dashboard state
   const tapCountRef = useRef(0);
   const tapTimerRef = useRef(null);
-  const [customKnowledgeData, setCustomKnowledgeData] = useState(DEFAULT_CUSTOM_KNOWLEDGE);
   const [showAdminModal, setShowAdminModal] = useState(() => {
     try {
       return new URLSearchParams(window.location.search).get('admin') === 'true';
@@ -224,7 +208,7 @@ export default function App() {
         label,
         targetUrl
       })
-    }).catch(() => {});
+    }).catch((err) => console.warn('[Vikash AI Click Track Warning]:', err?.message));
   };
 
   const fetchLiveWelcome = async (targetId = 'welcome-1') => {
@@ -234,12 +218,20 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isWelcomeGreeting: true })
       });
-      const data = res.ok ? await res.json() : null;
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => '');
+        throw new Error(`Welcome API HTTP ${res.status}: ${errBody.slice(0, 150)}`);
+      }
+      const data = await res.json();
+      if (data?.debugError) {
+        console.warn('[Vikash AI Welcome Diagnostic]:', data.debugError);
+      }
       const welcome = String(data?.welcome || FALLBACK_WELCOME).trim();
       setMessages((prev) =>
         prev.map((m) => (m.id === targetId ? { ...m, text: welcome, isStreaming: false } : m))
       );
-    } catch {
+    } catch (err) {
+      console.error('[Vikash AI Welcome Error]:', err);
       setMessages((prev) =>
         prev.map((m) => (m.id === targetId ? { ...m, text: FALLBACK_WELCOME, isStreaming: false } : m))
       );
@@ -289,7 +281,9 @@ export default function App() {
             }
           }
         }
-      } catch {}
+      } catch (err) {
+        console.warn('[Vikash AI History Restore Warning]:', err?.message);
+      }
       fetchLiveWelcome('welcome-1');
     };
     restoreOrGreet();
@@ -310,11 +304,14 @@ export default function App() {
               const parts = [a.suburb || a.village || a.town || a.city, a.state].filter(Boolean);
               if (parts.length > 0) label = parts.join(', ');
             }
-          } catch {}
+          } catch (geoErr) {
+            console.warn('[Vikash AI Reverse Geocode Warning]:', geoErr?.message);
+          }
           setCachedGeoStr(label);
           if (forcePrompt) showToast('GPS लोकेशन अपडेट हो गई');
         },
-        () => {
+        (err) => {
+          console.warn('[Vikash AI GPS Warning]:', err?.message);
           if (forcePrompt) showToast('लोकेशन की अनुमति नहीं मिली');
         },
         { timeout: 6000 }
@@ -322,20 +319,15 @@ export default function App() {
     };
     if (forcePrompt) run();
     else if (navigator.permissions?.query) {
-      navigator.permissions.query({ name: 'geolocation' }).then((p) => p.state === 'granted' && run()).catch(() => {});
+      navigator.permissions
+        .query({ name: 'geolocation' })
+        .then((p) => p.state === 'granted' && run())
+        .catch(() => {});
     }
   };
 
   useEffect(() => {
     detectGps(false);
-    // Load optional ./data/customKnowledge.js dynamically if present without breaking build
-    import(/* @vite-ignore */ './data/customKnowledge.js')
-      .then((mod) => {
-        if (mod && mod.VIKASH_CUSTOM_KNOWLEDGE) {
-          setCustomKnowledgeData(mod.VIKASH_CUSTOM_KNOWLEDGE);
-        }
-      })
-      .catch(() => {});
   }, []);
 
   const getDeviceContext = async () => {
@@ -393,30 +385,39 @@ export default function App() {
       await navigator.clipboard.writeText(String(text || ''));
       setCopiedMsgId(msgId);
       setTimeout(() => setCopiedMsgId((cur) => (cur === msgId ? null : cur)), 2000);
-    } catch {
+    } catch (err) {
+      console.error('[Vikash AI Clipboard Error]:', err);
       showToast('कॉपी करने में समस्या आई');
     }
   };
 
   const handleSpeakMessage = (msgId, text) => {
-    if (!('speechSynthesis' in window)) {
-      showToast('इस ब्राउज़र में वॉइस रीडिंग उपलब्ध नहीं है');
-      return;
-    }
-    if (speakingMsgId === msgId) {
+    try {
+      if (!('speechSynthesis' in window)) {
+        showToast('इस ब्राउज़र में वॉइस रीडिंग उपलब्ध नहीं है');
+        return;
+      }
+      if (speakingMsgId === msgId) {
+        window.speechSynthesis.cancel();
+        setSpeakingMsgId(null);
+        return;
+      }
       window.speechSynthesis.cancel();
+      const clean = String(text || '').replace(/https?:\/\/\S+/g, '').replace(/[*_#`~]/g, '').trim();
+      if (!clean) return;
+      const utter = new SpeechSynthesisUtterance(clean);
+      utter.lang = 'hi-IN';
+      utter.onend = () => setSpeakingMsgId(null);
+      utter.onerror = (e) => {
+        console.error('[Vikash AI TTS Error]:', e);
+        setSpeakingMsgId(null);
+      };
+      setSpeakingMsgId(msgId);
+      window.speechSynthesis.speak(utter);
+    } catch (err) {
+      console.error('[Vikash AI Speak Exception]:', err);
       setSpeakingMsgId(null);
-      return;
     }
-    window.speechSynthesis.cancel();
-    const clean = String(text || '').replace(/https?:\/\/\S+/g, '').replace(/[*_#`~]/g, '').trim();
-    if (!clean) return;
-    const utter = new SpeechSynthesisUtterance(clean);
-    utter.lang = 'hi-IN';
-    utter.onend = () => setSpeakingMsgId(null);
-    utter.onerror = () => setSpeakingMsgId(null);
-    setSpeakingMsgId(msgId);
-    window.speechSynthesis.speak(utter);
   };
 
   const sendMessage = async (textToSend, isRetry = false) => {
@@ -451,12 +452,26 @@ export default function App() {
           message: trimmed,
           history: historyPayload,
           clientDevice,
-          customKnowledge: customKnowledgeData
+          customKnowledge: VIKASH_CUSTOM_KNOWLEDGE
         })
       });
       clearTimeout(timeoutId);
 
-      if (!res.ok || !res.body) throw new Error('Network error');
+      if (!res.ok) {
+        const rawErr = await res.text().catch(() => '');
+        throw new Error(`Chat API HTTP ${res.status}: ${rawErr.slice(0, 220)}`);
+      }
+
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const jsonErr = await res.json();
+        console.error('[Vikash AI JSON Error Response]:', jsonErr);
+        throw new Error(jsonErr?.error || jsonErr?.debugError || 'Server returned JSON error');
+      }
+
+      if (!res.body) {
+        throw new Error('ReadableStream body missing from response');
+      }
 
       setIsLoading(false);
       setStreamingMsgId(botMsgId);
@@ -500,12 +515,21 @@ export default function App() {
             } else if (evt.type === 'done') {
               donePayload = evt;
             }
-          } catch {}
+          } catch (parseErr) {
+            console.warn('[Vikash AI SSE Parse Warning]:', parseErr, raw);
+          }
         }
       }
 
       setStreamingMsgId(null);
+
+      if (donePayload?.debugError) {
+        console.error('[Vikash AI Backend Diagnostic]:', donePayload.debugError);
+      }
+
       if (donePayload?.isError || (!fullText.trim() && !donePayload?.reply)) {
+        const reason = donePayload?.debugError || donePayload?.error || 'Empty AI response';
+        console.error('[Vikash AI Stream Failed]:', reason);
         setMessages((prev) =>
           prev.map((m) =>
             m.id === botMsgId
@@ -537,8 +561,9 @@ export default function App() {
           setChips(donePayload.quickFollowUps);
         }
       }
-    } catch {
+    } catch (err) {
       clearTimeout(timeoutId);
+      console.error('[Vikash AI Request Exception]:', err);
       setIsLoading(false);
       setStreamingMsgId(null);
       setMessages((prev) => [
@@ -560,24 +585,32 @@ export default function App() {
   };
 
   const handleVoiceInput = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      showToast('वॉइस इनपुट के लिए Chrome ब्राउज़र का उपयोग करें');
-      return;
-    }
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'hi-IN';
-    recognition.interimResults = false;
-    setIsListening(true);
-    recognition.onresult = (e) => {
-      const spoken = e.results[0][0].transcript;
+    try {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        showToast('वॉइस इनपुट के लिए Chrome ब्राउज़र का उपयोग करें');
+        return;
+      }
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'hi-IN';
+      recognition.interimResults = false;
+      setIsListening(true);
+      recognition.onresult = (e) => {
+        const spoken = e.results[0][0].transcript;
+        setIsListening(false);
+        setInput(spoken);
+        sendMessage(spoken);
+      };
+      recognition.onerror = (e) => {
+        console.error('[Vikash AI Voice Recognition Error]:', e);
+        setIsListening(false);
+      };
+      recognition.onend = () => setIsListening(false);
+      recognition.start();
+    } catch (err) {
+      console.error('[Vikash AI Voice Exception]:', err);
       setIsListening(false);
-      setInput(spoken);
-      sendMessage(spoken);
-    };
-    recognition.onerror = () => setIsListening(false);
-    recognition.onend = () => setIsListening(false);
-    recognition.start();
+    }
   };
 
   // Secret 5-tap on Vikash AI logo
@@ -605,13 +638,15 @@ export default function App() {
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
+        console.error('[Vikash AI Admin Error]:', data);
         setAdminError(data.error || 'लॉगिन विफल रहा');
         setAdminAuthorized(false);
       } else {
         setAdminAuthorized(true);
         setAdminData(data);
       }
-    } catch {
+    } catch (err) {
+      console.error('[Vikash AI Admin Network Error]:', err);
       setAdminError('सर्वर से कनेक्ट नहीं हो सका');
     } finally {
       setAdminLoading(false);

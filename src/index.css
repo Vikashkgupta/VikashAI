@@ -1,1 +1,12 @@
 @import "tailwindcss";
+
+/* Hide Netlify floating "Powered by Netlify" badge on free subdomains */
+a[href*="netlify.com"][style*="position: fixed"],
+a[href*="utm_source=netlify-badge"],
+iframe[src*="netlify"],
+div[style*="z-index: 999999"] {
+  display: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  visibility: hidden !important;
+}
