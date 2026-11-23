@@ -1,6 +1,9 @@
 // File: netlify/functions/personalChat.js
 // Vikash AI — Personal Assistant Backend (Netlify Functions 2.0 Web-Standard SSE)
-// Reads both `customKnowledge.js` AND live notes saved in Supabase `vikash_custom_notes` (cached 2 min for 0ms speed)!
+// Features:
+// - 0ms Intent-Based Smart Routing (only calls GitHub, IG, Supabase Notes, or Search when needed)
+// - Date-Stamped Temporal Memory (`Saved on` date + `days ago` so past events are never confused with present)
+// - Active Gemini 3 / Flash-Lite models with `thinkingBudget: 0` & safe `buildValidGeminiContents`
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -168,7 +171,7 @@ function classifyUserIntent(message, chatMode = 'default') {
   const needsAboutBio =
     chatMode === 'recruiter' ||
     needsGitHub ||
-    /vikash|विकास|about|intro|parichay|परिचय|kaun|who|college|btech|aiml|diploma|study|पढ़ाई|education|aktu|unnao|mairwa|barabanki|siwan|training|award|softpro|makartaj|update|नया/i.test(
+    /vikash|विकास|about|intro|parichay|परिचय|kaun|who|college|btech|aiml|diploma|study|पढ़ाई|education|aktu|unnao|mairwa|barabanki|siwan|training|award|softpro|makartaj|update|नया|exam|एग्जाम|abhi|kahan|कहां/i.test(
       m
     );
 
@@ -207,6 +210,36 @@ function detectVisitorNameFromText(text) {
     }
   }
   return '';
+}
+
+function buildValidGeminiContents(history, userMessage) {
+  const cleaned = [];
+
+  for (const msg of Array.isArray(history) ? history : []) {
+    const role = msg?.role === 'assistant' || msg?.role === 'model' ? 'model' : 'user';
+    const text = String(msg?.text || msg?.content || '').trim();
+    if (!text) continue;
+    if (text.includes('Something went wrong')) continue;
+
+    if (cleaned.length === 0 && role === 'model') continue;
+
+    if (cleaned.length > 0 && cleaned[cleaned.length - 1].role === role) {
+      cleaned[cleaned.length - 1].parts[0].text += '\n' + text;
+    } else {
+      cleaned.push({ role, parts: [{ text }] });
+    }
+  }
+
+  const finalUserText = String(userMessage || 'Namaste!').trim();
+  if (cleaned.length > 0 && cleaned[cleaned.length - 1].role === 'user') {
+    if (cleaned[cleaned.length - 1].parts[0].text !== finalUserText) {
+      cleaned[cleaned.length - 1].parts[0].text += '\n' + finalUserText;
+    }
+  } else {
+    cleaned.push({ role: 'user', parts: [{ text: finalUserText }] });
+  }
+
+  return cleaned;
 }
 
 async function fetchGitHubData() {
@@ -331,7 +364,9 @@ function getSocialLinks(ghData, igData, customKnowledge) {
   const ghUser = String(process.env.GITHUB_USERNAME || 'Vikashkgupta').trim();
 
   const ghUrl = String(process.env.GITHUB_URL || ghData?.htmlUrl || `https://github.com/${ghUser}`).trim();
-  const igUrl = String(process.env.IG_URL || extra.instagram || (igData?.username ? `https://instagram.com/${igData.username}` : '')).trim();
+  const igUrl = String(
+    process.env.IG_URL || extra.instagram || (igData?.username ? `https://instagram.com/${igData.username}` : '')
+  ).trim();
   const twitterUrl = String(
     process.env.TWITTER_URL || (ghData?.twitterUsername ? `https://x.com/${ghData.twitterUsername}` : '')
   ).trim();
@@ -425,7 +460,6 @@ async function supabaseRequest(path, options = {}, timeoutMs = 2500) {
   return lastResult;
 }
 
-// Fetch live notes saved from Admin Dashboard (`vikash_custom_notes`) with 2-minute cache
 async function fetchLiveCustomNotes() {
   const now = Date.now();
   if (cachedCustomNotes && now - cachedCustomNotesAt < 2 * 60 * 1000) {
@@ -489,7 +523,8 @@ async function saveChatTurnToSupabase({
     { role: 'model', text: botReply, ts: nowIso }
   ].slice(-40);
 
-  const nextCount = (existing.ok ? Number(existing.data?.[0]?.message_count || 0) : Math.floor(baseTurns.length / 2)) + 1;
+  const nextCount =
+    (existing.ok ? Number(existing.data?.[0]?.message_count || 0) : Math.floor(baseTurns.length / 2)) + 1;
 
   const writeRes = await supabaseRequest(
     'personal_chat_sessions?on_conflict=session_id',
@@ -514,6 +549,7 @@ async function saveChatTurnToSupabase({
   }
   return { logged: true, sessionId, messageCount: nextCount };
 }
+
 function formatNoteRelativeAge(createdAtIso) {
   if (!createdAtIso) return '';
   const createdMs = new Date(createdAtIso).getTime();
@@ -590,7 +626,6 @@ function buildModularSystemPrompt({
     }
   }
 
-  // Always inject Vikash's saved live notes WITH exact `Saved on` timestamp & relative age
   if (
     (intent.needsAboutBio || intent.needsGitHub || intent.needsSocialLinks) &&
     Array.isArray(liveSupabaseNotes) &&
