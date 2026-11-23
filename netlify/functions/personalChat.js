@@ -2,9 +2,9 @@
 // Vikash AI — 0ms Intent-Based Smart Router & Ultra-Fast Streaming Backend (Netlify Functions 2.0 SSE)
 // Architecture:
 // - 0ms Synchronous Intent Router (CASUAL_CHAT, SOCIAL_LINKS, INSTAGRAM_STATS, GITHUB_PROJECTS, LIVE_SEARCH, FULL_BIO)
-// - Zero Pre-Flight Model Discovery (fires directly on gemini-flash-lite-latest; discovers /models only on failure)
-// - Dynamic Slim Modular System Prompts (minimal input tokens per intent = 2x faster first token)
-// - Non-blocking Background GitHub Cache Warmup during Casual Chat streams
+// - Active 2026 Model Priority (gemini-flash-lite-latest, gemini-2.5-flash-lite, gemini-3.5-flash-lite, gemini-2.5-flash)
+// - Permanent 404/429 Model Blocking (retired gemini-2.0-* excluded; any 404/429 model blocked immediately)
+// - Dynamic Slim Modular System Prompts & Non-blocking Background GitHub Cache Warmup
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -13,18 +13,19 @@ const CORS_HEADERS = {
   'Access-Control-Max-Age': '86400'
 };
 
+// Active models (retired gemini-2.0-* removed because Google shut them down with 404)
 const FAST_DEFAULT_MODELS = [
   'gemini-flash-lite-latest',
-  'gemini-2.0-flash-lite',
-  'gemini-2.0-flash',
-  'gemini-3.1-flash-lite',
+  'gemini-2.5-flash-lite',
+  'gemini-3.5-flash-lite',
+  'gemini-2.5-flash',
   'gemini-flash-latest'
 ];
 
 let cachedWorkingModel = 'gemini-flash-lite-latest';
 let cachedModels = null;
 let cachedModelsAt = 0;
-const quotaBlockedModels = new Set();
+const blockedModels = new Set(['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash-001', 'gemini-2.0-flash-lite-001']);
 
 let cachedGithub = null;
 let cachedGithubAt = 0;
@@ -70,6 +71,9 @@ function getISTDateTime() {
 function isSupportedTextModel(name) {
   const n = String(name || '').toLowerCase();
   if (
+    blockedModels.has(n) ||
+    n.includes('2.0-') ||
+    n.includes('1.5-') ||
     n.includes('tts') ||
     n.includes('image') ||
     n.includes('imagen') ||
@@ -77,11 +81,13 @@ function isSupportedTextModel(name) {
     n.includes('embedding') ||
     n.includes('aqa') ||
     n.includes('audio') ||
+    n.includes('live') ||
+    n.includes('transcribe') ||
     n.includes('robotics') ||
     n.includes('thinking') ||
     n.includes('learnlm') ||
     n.includes('2.5-pro') ||
-    n.includes('2.5-flash') ||
+    n.includes('-pro') ||
     n.includes('exp')
   ) {
     return false;
@@ -91,33 +97,34 @@ function isSupportedTextModel(name) {
 
 function rankModel(name) {
   const n = String(name || '').toLowerCase();
-  if (quotaBlockedModels.has(name)) return -100;
+  if (blockedModels.has(name) || blockedModels.has(n)) return -100;
   if (n === 'gemini-flash-lite-latest') return 100;
-  if (n.startsWith('gemini-2.0-flash-lite')) return 96;
-  if (n.startsWith('gemini-2.0-flash') && !n.includes('lite')) return 92;
-  if (n.startsWith('gemini-3') && n.includes('flash-lite')) return 88;
+  if (n === 'gemini-2.5-flash-lite' || n.startsWith('gemini-2.5-flash-lite')) return 96;
+  if (n === 'gemini-3.5-flash-lite' || (n.startsWith('gemini-3') && n.includes('flash-lite'))) return 92;
+  if (n === 'gemini-2.5-flash' || n.startsWith('gemini-2.5-flash')) return 88;
   if (n === 'gemini-flash-latest') return 84;
-  if (n.startsWith('gemini-3') && n.includes('flash')) return 60;
+  if (n.includes('flash-lite')) return 80;
+  if (n.includes('flash')) return 60;
   return 40;
 }
 
 function buildDiverseModelOrder(list) {
-  const usable = list.filter((m) => !quotaBlockedModels.has(m));
-  const pool = usable.length > 0 ? usable : list;
+  const usable = list.filter((m) => !blockedModels.has(m) && !m.includes('2.0-'));
+  const pool = usable.length > 0 ? usable : FAST_DEFAULT_MODELS.filter((m) => !blockedModels.has(m));
   const base =
-    cachedWorkingModel && !quotaBlockedModels.has(cachedWorkingModel)
+    cachedWorkingModel && !blockedModels.has(cachedWorkingModel)
       ? [cachedWorkingModel, ...pool.filter((m) => m !== cachedWorkingModel)]
       : [...pool];
 
   const distinct = [];
   const usedFamilies = new Set();
   for (const m of base) {
-    const family = m.includes('2.0-flash-lite')
-      ? '2.0-lite'
-      : m.includes('2.0-flash')
-      ? '2.0-flash'
-      : m.includes('3.1-flash-lite')
-      ? '3.1-lite'
+    const family = m.includes('2.5-flash-lite')
+      ? '2.5-lite'
+      : m.includes('3.5-flash-lite')
+      ? '3.5-lite'
+      : m.includes('2.5-flash')
+      ? '2.5-flash'
       : m.includes('flash-lite-latest')
       ? 'lite-latest'
       : m;
@@ -836,7 +843,7 @@ export default async (req) => {
       const modeHint = body.chatMode === 'recruiter' ? ' (Recruiter/Hiring mode)' : '';
       const prompt = `Generate a fresh, warm, 1-line Hindi/Hinglish welcome greeting (max 12 words) for "Vikash AI" (Personal Assistant of Vikash Kumar Gupta)${modeHint}. Today is ${ist.dateStr}, ${ist.timeStr}. No markdown, just 1 crisp friendly line.`;
 
-      const fastModels = getFastModelCandidates().slice(0, 2);
+      const fastModels = getFastModelCandidates().slice(0, 3);
       for (const model of fastModels) {
         try {
           const res = await fetchWithTimeout(
@@ -849,7 +856,7 @@ export default async (req) => {
                 generationConfig: { temperature: 0.95, maxOutputTokens: 55 }
               })
             },
-            2500
+            3500
           );
           if (res.ok) {
             const data = await res.json();
@@ -858,6 +865,8 @@ export default async (req) => {
               cachedWorkingModel = model;
               return jsonResponse(200, { success: true, welcome });
             }
+          } else if (res.status === 404 || res.status === 429) {
+            blockedModels.add(model);
           }
         } catch {}
       }
@@ -948,6 +957,7 @@ export default async (req) => {
                 payload.tools = [{ google_search: {} }];
               }
 
+              // 8500ms timeout prevents premature AbortError on cold starts or search queries
               const gRes = await fetchWithTimeout(
                 `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`,
                 {
@@ -955,13 +965,14 @@ export default async (req) => {
                   headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
                   body: JSON.stringify(payload)
                 },
-                5500
+                8500
               );
 
               if (!gRes.ok || !gRes.body) {
                 const errTxt = await gRes.text().catch(() => '');
-                if (gRes.status === 429) {
-                  quotaBlockedModels.add(model);
+                // Permanently block models returning 404 (retired/not found) or 429 (quota exhausted)
+                if (gRes.status === 404 || gRes.status === 429) {
+                  blockedModels.add(model);
                 }
                 errors.push(`${model}[search=${withSearch}](${gRes.status}): ${errTxt.slice(0, 100)}`);
                 if (cachedWorkingModel === model) cachedWorkingModel = null;
@@ -1007,10 +1018,10 @@ export default async (req) => {
           return false;
         };
 
-        // Pass 1: Zero Pre-Flight Discovery — fire directly on fast default models
-        const fastCandidates = getFastModelCandidates().slice(0, 3);
+        // Pass 1: Zero Pre-Flight Discovery — fire directly on active 2026 fast models
+        const fastCandidates = getFastModelCandidates().slice(0, 4);
         for (const model of fastCandidates) {
-          if (quotaBlockedModels.has(model)) continue;
+          if (blockedModels.has(model)) continue;
           succeeded = await tryModelStream(model);
           if (succeeded) break;
         }
@@ -1019,7 +1030,7 @@ export default async (req) => {
         if (!succeeded) {
           const discovered = await discoverGeminiModelsLazy(apiKey);
           for (const model of discovered.slice(0, 4)) {
-            if (triedModels.has(model) || quotaBlockedModels.has(model)) continue;
+            if (triedModels.has(model) || blockedModels.has(model)) continue;
             succeeded = await tryModelStream(model);
             if (succeeded) break;
           }
@@ -1027,7 +1038,10 @@ export default async (req) => {
 
         // Pass 3: Non-streaming rescue fallback
         if (!succeeded) {
-          for (const model of getFastModelCandidates().slice(0, 2)) {
+          const rescueModels = [...getFastModelCandidates(), ...(cachedModels || [])]
+            .filter((m) => !blockedModels.has(m))
+            .slice(0, 3);
+          for (const model of rescueModels) {
             try {
               const rescueRes = await fetchWithTimeout(
                 `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -1040,7 +1054,7 @@ export default async (req) => {
                     generationConfig: { temperature: 0.6, maxOutputTokens: 900 }
                   })
                 },
-                4500
+                6500
               );
               if (rescueRes.ok) {
                 const rData = await rescueRes.json();
@@ -1052,6 +1066,8 @@ export default async (req) => {
                   sendEvent({ type: 'delta', text: rescuedText });
                   break;
                 }
+              } else if (rescueRes.status === 404 || rescueRes.status === 429) {
+                blockedModels.add(model);
               }
             } catch {}
           }
@@ -1091,7 +1107,7 @@ export default async (req) => {
           actionButtons
         });
 
-        // Give background warmup a brief window to settle if still running (already ran concurrently during stream)
+        // Give background warmup a brief window to settle if still running
         if (warmupPromise) {
           await Promise.race([warmupPromise, new Promise((r) => setTimeout(r, 150))]);
         }
