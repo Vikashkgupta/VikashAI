@@ -2,8 +2,8 @@
 // Vikash AI — Personal Assistant Backend (Netlify Functions 2.0 Web-Standard SSE)
 // Features:
 // - Laddu AI Engine: Dynamic Model Discovery (Cached 10 min) + Diversified Multi-Family Failover
-// - 0ms Intent-Based Smart Routing (only fetches GitHub, IG, Notes, or Search when needed)
-// - Compact Personal Prompt (60% lighter so personal queries stream fast and never cut off)
+// - Always-On Compact Core Identity (0ms overhead, ZERO hallucination about Vikash's bio/education/skills)
+// - 0ms Intent-Based Smart Routing for external APIs (GitHub, IG, Google Search only when needed)
 // - Date-Stamped Temporal Memory (`Saved on` date + `days ago`)
 // - Zero Pre-Flight DB Blocking (instant stream start, saves turn to Supabase after completion)
 
@@ -25,7 +25,22 @@ const notFoundModels = new Set([
   'gemini-2.5-flash-lite',
   'gemini-2.5-pro'
 ]);
-const quotaExhaustedModels = new Set();
+// Temporary cooldown map (45s) instead of permanent ban, since Gemini RPM resets every minute
+const quotaCooldownMap = new Map();
+
+function isModelCoolingDown(name) {
+  const until = quotaCooldownMap.get(name);
+  if (!until) return false;
+  if (Date.now() > until) {
+    quotaCooldownMap.delete(name);
+    return false;
+  }
+  return true;
+}
+
+function markModelCooldown(name, ms = 45000) {
+  quotaCooldownMap.set(name, Date.now() + ms);
+}
 
 let cachedGithub = null;
 let cachedGithubAt = 0;
@@ -73,13 +88,16 @@ function getISTDateTime() {
 
 function isSupportedTextModel(name) {
   const n = String(name || '').toLowerCase();
-  if (notFoundModels.has(n) || quotaExhaustedModels.has(n)) return false;
+  if (notFoundModels.has(n) || isModelCoolingDown(n)) return false;
   if (
-    /embedding|imagen|veo|aqa|tts|audio|robotics|learnlm|image|thinking|omni|2\.0-|2\.5-pro|2\.5-flash|exp/i.test(n)
+    /embedding|imagen|veo|aqa|tts|audio|robotics|learnlm|image|thinking|omni|transcribe|computer-use|deep-research|argon|carbon|hydrogen|neon|2\.0-|2\.5-pro|2\.5-flash|exp/i.test(
+      n
+    )
   ) {
     return false;
   }
-  return n.includes('gemini') || n.includes('gemma-3');
+  // Strictly allow only standard Gemini Flash chat models or Gemma-3 instruction models
+  return (n.startsWith('gemini-') && n.includes('flash')) || n.startsWith('gemma-3-');
 }
 
 function rankModel(name) {
@@ -95,8 +113,6 @@ function rankModel(name) {
   return 50;
 }
 
-// Ensures top-4 candidates are diversified across model families so a flash-lite 503 spike
-// immediately fails over to gemini-flash-latest or gemma-3 instead of retrying 4 flash-lites!
 function diversifyModelPool(list) {
   const unique = [...new Set(list.filter(Boolean))];
   const primaryLite = unique.find((m) => /flash-lite/i.test(m));
@@ -116,14 +132,14 @@ function getDefaultCandidateModels() {
     'gemma-3-27b-it',
     'gemini-3-flash-preview',
     'gemini-3.1-flash-lite-preview'
-  ].filter((m) => !quotaExhaustedModels.has(m) && !notFoundModels.has(m));
+  ].filter((m) => !isModelCoolingDown(m) && !notFoundModels.has(m));
 
   const fallbackPool =
     base.length > 0
       ? base
       : ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemma-3-27b-it'];
 
-  if (cachedWorkingModel && !quotaExhaustedModels.has(cachedWorkingModel) && !notFoundModels.has(cachedWorkingModel)) {
+  if (cachedWorkingModel && !isModelCoolingDown(cachedWorkingModel) && !notFoundModels.has(cachedWorkingModel)) {
     return diversifyModelPool([cachedWorkingModel, ...fallbackPool.filter((m) => m !== cachedWorkingModel)]);
   }
   return diversifyModelPool(fallbackPool);
@@ -160,12 +176,12 @@ async function getCandidateModels(apiKey) {
 
   const pool =
     cachedDiscoveredModels && cachedDiscoveredModels.length > 0
-      ? cachedDiscoveredModels.filter((m) => !quotaExhaustedModels.has(m) && !notFoundModels.has(m))
+      ? cachedDiscoveredModels.filter((m) => !isModelCoolingDown(m) && !notFoundModels.has(m))
       : getDefaultCandidateModels();
 
   const diversified = diversifyModelPool(pool.length > 0 ? pool : getDefaultCandidateModels());
 
-  if (cachedWorkingModel && !quotaExhaustedModels.has(cachedWorkingModel) && !notFoundModels.has(cachedWorkingModel)) {
+  if (cachedWorkingModel && !isModelCoolingDown(cachedWorkingModel) && !notFoundModels.has(cachedWorkingModel)) {
     return [cachedWorkingModel, ...diversified.filter((m) => m !== cachedWorkingModel)];
   }
   return diversified;
@@ -204,9 +220,10 @@ function classifyUserIntent(message, chatMode = 'default') {
     );
 
   const needsAboutBio =
+    !isGreetingOrShort ||
     chatMode === 'recruiter' ||
     needsGitHub ||
-    /vikash|विकास|about|intro|parichay|परिचय|kaun|who|college|btech|aiml|diploma|study|पढ़ाई|education|aktu|unnao|mairwa|barabanki|siwan|training|award|certificate|certificates|cert|linkedin|linedin|dob|birth|age|softpro|makartaj|update|नया|exam|एग्जाम|abhi|kahan|कहां/i.test(
+    /vikash|विकास|about|intro|parichay|परिचय|baare|bare|jaante|jante|unke|unko|kaun|who|college|btech|aiml|diploma|study|पढ़ाई|education|aktu|unnao|mairwa|barabanki|siwan|training|award|certificate|certificates|cert|linkedin|linedin|dob|birth|age|softpro|makartaj|update|नया|exam|एग्जाम|abhi|kahan|कहां/i.test(
       m
     );
 
@@ -600,6 +617,7 @@ function buildModularSystemPrompt({
   const lines = [
     `You are "Vikash AI" (Personal Assistant of Vikash Kumar Gupta).`,
     `Style: Friendly, smart, natural Hinglish/Hindi (or English if user asks in English). Keep replies crisp and well-formatted.`,
+    `STRICT ANTI-HALLUCINATION RULE: When answering ANY question about Vikash Kumar Gupta (his college, degree, schooling, skills, projects, DOB, or life), ONLY use the verified facts provided below. NEVER invent or guess any degree, college, marks, or details not explicitly written below. If a detail is not in the provided info, honestly say you don't have that exact info yet.`,
     `CURRENT REAL-WORLD DATE & TIME (IST): ${ist.dateStr}, ${ist.timeStr}`
   ];
 
@@ -619,8 +637,9 @@ function buildModularSystemPrompt({
     );
   }
 
-  if (intent.needsAboutBio && customKnowledge) {
-    lines.push(`ABOUT VIKASH:\n${customKnowledge.aboutMe || ''}`);
+  // Always include compact verified identity on every non-greeting query (0ms overhead, prevents hallucinations!)
+  if (customKnowledge && (!intent.isGreetingOrShort || intent.needsAboutBio)) {
+    lines.push(`ABOUT VIKASH (VERIFIED):\n${customKnowledge.aboutMe || ''}`);
     if (Array.isArray(customKnowledge.education)) {
       const compactEdu = customKnowledge.education
         .map(
@@ -628,7 +647,7 @@ function buildModularSystemPrompt({
             `- ${e.level}: ${e.course} @ ${e.institute} (${e.passingYear || e.duration || ''}${e.percentage ? `, ${e.percentage}` : ''})`
         )
         .join('\n');
-      lines.push(`EDUCATION:\n${compactEdu}`);
+      lines.push(`EDUCATION (VERIFIED):\n${compactEdu}`);
     }
     if (Array.isArray(customKnowledge.trainingsAndAwards)) {
       const compactTrainings = customKnowledge.trainingsAndAwards
@@ -637,18 +656,18 @@ function buildModularSystemPrompt({
             `- ${t.title} @ ${t.organization} (${t.when || t.duration})${t.award ? ` — Award: ${t.award}` : ''}`
         )
         .join('\n');
-      lines.push(`TRAININGS, CERTIFICATES & AWARDS:\n${compactTrainings}`);
+      lines.push(`TRAININGS, CERTIFICATES & AWARDS (VERIFIED):\n${compactTrainings}`);
     }
     if (Array.isArray(customKnowledge.skills)) {
-      lines.push(`SKILLS: ${customKnowledge.skills.join(', ')}`);
+      lines.push(`SKILLS (VERIFIED): ${customKnowledge.skills.join(', ')}`);
     }
     if (Array.isArray(customKnowledge.highlights)) {
-      lines.push(`HIGHLIGHTS:\n- ${customKnowledge.highlights.join('\n- ')}`);
+      lines.push(`HIGHLIGHTS (VERIFIED):\n- ${customKnowledge.highlights.join('\n- ')}`);
     }
   }
 
   if (
-    (intent.needsAboutBio || intent.needsGitHub || intent.needsSocialLinks) &&
+    !intent.isGreetingOrShort &&
     Array.isArray(liveSupabaseNotes) &&
     liveSupabaseNotes.length > 0
   ) {
@@ -800,13 +819,13 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
               { role: 'model', parts: [{ text: 'Understood.' }] },
               ...contents
             ],
-            generationConfig: { temperature: 0.55 }
+            generationConfig: { temperature: 0.45 }
           }
         : {
             systemInstruction: { parts: [{ text: systemInstruction }] },
             contents,
             generationConfig: {
-              temperature: withSearch ? 0.25 : 0.55
+              temperature: withSearch ? 0.25 : 0.45
             }
           };
 
@@ -845,7 +864,11 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
           break;
         }
         if (res.status === 429) {
-          quotaExhaustedModels.add(modelName);
+          // If Google Search grounding hit 429, immediately retry SAME model without search!
+          if (withSearch) {
+            continue;
+          }
+          markModelCooldown(modelName, 45000);
           failedThisTurn.add(modelName);
           if (cachedWorkingModel === modelName) cachedWorkingModel = null;
           break;
@@ -856,6 +879,9 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
           break;
         }
         if (res.status === 500 || res.status === 400) {
+          if (withSearch) {
+            continue;
+          }
           failedThisTurn.add(modelName);
           if (cachedWorkingModel === modelName) cachedWorkingModel = null;
           break;
@@ -889,12 +915,12 @@ async function callGeminiBufferedRescue(apiKey, systemInstruction, contents, ski
             { role: 'model', parts: [{ text: 'Understood.' }] },
             ...contents
           ],
-          generationConfig: { temperature: 0.55 }
+          generationConfig: { temperature: 0.45 }
         }
       : {
           systemInstruction: { parts: [{ text: systemInstruction }] },
           contents,
-          generationConfig: { temperature: 0.55 }
+          generationConfig: { temperature: 0.45 }
         };
 
     try {
@@ -927,7 +953,7 @@ async function callGeminiBufferedRescue(apiKey, systemInstruction, contents, ski
         const errTxt = await res.text().catch(() => '');
         errors.push(`rescue-${modelName}(${res.status}): ${errTxt.slice(0, 90)}`);
         if (res.status === 404) notFoundModels.add(modelName);
-        if (res.status === 429) quotaExhaustedModels.add(modelName);
+        if (res.status === 429) markModelCooldown(modelName, 45000);
       }
     } catch (err) {
       errors.push(`rescue-${modelName}: ${err?.message}`);
@@ -1039,9 +1065,7 @@ export default async (req) => {
     const [ghData, igData, liveSupabaseNotes] = await Promise.all([
       intent.needsGitHub ? fetchGitHubData() : Promise.resolve(cachedGithub),
       intent.needsInstagramStats ? fetchInstagramData() : Promise.resolve(cachedInstagram),
-      intent.needsAboutBio || intent.needsGitHub || intent.needsSocialLinks
-        ? fetchLiveCustomNotes()
-        : Promise.resolve(cachedCustomNotes || [])
+      !intent.isGreetingOrShort ? fetchLiveCustomNotes() : Promise.resolve(cachedCustomNotes || [])
     ]);
 
     if (!intent.needsGitHub && !cachedGithub) {
