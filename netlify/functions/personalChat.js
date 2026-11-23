@@ -827,95 +827,100 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
   const failedThisTurn = new Set();
   const transient503Models = [];
 
-  for (let i = 0; i < Math.min(models.length, 4); i++) {
-    const modelName = models[i];
+  const attemptSingleModel = async (modelName, withSearch, timeoutMs) => {
     const isGemma = modelName.toLowerCase().includes('gemma');
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse`;
-    const attempts = useSearch && !isGemma ? [true, false] : [false];
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    for (const withSearch of attempts) {
-      const payload = isGemma
-        ? {
-            contents: [
-              { role: 'user', parts: [{ text: `INSTRUCTIONS:\n${systemInstruction}` }] },
-              { role: 'model', parts: [{ text: 'Understood.' }] },
-              ...contents
-            ],
-            generationConfig: { temperature: 0.45, maxOutputTokens: 1024 }
+    const payload = isGemma
+      ? {
+          contents: [
+            { role: 'user', parts: [{ text: `INSTRUCTIONS:\n${systemInstruction}` }] },
+            { role: 'model', parts: [{ text: 'Understood.' }] },
+            ...contents
+          ],
+          generationConfig: { temperature: 0.45, maxOutputTokens: 1024 }
+        }
+      : {
+          systemInstruction: { parts: [{ text: systemInstruction }] },
+          contents,
+          generationConfig: {
+            temperature: withSearch ? 0.25 : 0.45,
+            maxOutputTokens: 1024
           }
-        : {
-            systemInstruction: { parts: [{ text: systemInstruction }] },
-            contents,
-            generationConfig: {
-              temperature: withSearch ? 0.25 : 0.45,
-              maxOutputTokens: 1024
-            }
-          };
+        };
 
-      if (withSearch && !isGemma) {
-        payload.tools = [{ google_search: {} }];
-      }
-
-      // Fail fast on slow model headers so plenty of execution window remains for full streaming!
-      const timeoutMs = withSearch ? 6500 : 4500;
-
-      try {
-        const res = await fetchWithTimeout(
-          endpoint,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-goog-api-key': cleanKey
-            },
-            body: JSON.stringify(payload)
-          },
-          timeoutMs
-        );
-
-        if (res.ok && res.body) {
-          cachedWorkingModel = modelName;
-          return { ok: true, response: res, modelUsed: modelName, failedThisTurn };
-        }
-
-        const errTxt = await res.text().catch(() => '');
-        errors.push(`${modelName}[search=${withSearch}](${res.status}): ${errTxt.slice(0, 90)}`);
-
-        if (res.status === 404) {
-          notFoundModels.add(modelName);
-          failedThisTurn.add(modelName);
-          if (cachedWorkingModel === modelName) cachedWorkingModel = null;
-          break;
-        }
-        if (res.status === 429) {
-          // If Google Search grounding hit 429, immediately retry SAME model without search!
-          if (withSearch) {
-            continue;
-          }
-          markModelCooldown(modelName, 45000);
-          failedThisTurn.add(modelName);
-          if (cachedWorkingModel === modelName) cachedWorkingModel = null;
-          break;
-        }
-        if (res.status === 503) {
-          transient503Models.push(modelName);
-          if (cachedWorkingModel === modelName) cachedWorkingModel = null;
-          break;
-        }
-        if (res.status === 500 || res.status === 400) {
-          if (withSearch) {
-            continue;
-          }
-          failedThisTurn.add(modelName);
-          if (cachedWorkingModel === modelName) cachedWorkingModel = null;
-          break;
-        }
-      } catch (err) {
-        errors.push(`${modelName}[search=${withSearch}]: ${err?.message || 'timeout'}`);
-        failedThisTurn.add(modelName);
-        if (cachedWorkingModel === modelName) cachedWorkingModel = null;
-      }
+    if (withSearch && !isGemma) {
+      payload.tools = [{ google_search: {} }];
     }
+
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': cleanKey
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+
+      if (res.ok && res.body) {
+        cachedWorkingModel = modelName;
+        return { ok: true, response: res, modelUsed: modelName, controller };
+      }
+
+      const errTxt = await res.text().catch(() => '');
+      errors.push(`${modelName}[search=${withSearch}](${res.status}): ${errTxt.slice(0, 80)}`);
+
+      if (res.status === 404) {
+        notFoundModels.add(modelName);
+        failedThisTurn.add(modelName);
+      } else if (res.status === 429 && !withSearch) {
+        markModelCooldown(modelName, 45000);
+        failedThisTurn.add(modelName);
+      } else if (res.status === 503) {
+        transient503Models.push(modelName);
+      } else if (res.status === 400 || res.status === 500) {
+        failedThisTurn.add(modelName);
+      }
+      if (cachedWorkingModel === modelName) cachedWorkingModel = null;
+      throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      clearTimeout(timer);
+      if (err?.name === 'AbortError') {
+        errors.push(`${modelName}[search=${withSearch}]: timeout`);
+      }
+      failedThisTurn.add(modelName);
+      if (cachedWorkingModel === modelName) cachedWorkingModel = null;
+      throw err;
+    }
+  };
+
+  // Wave 1: Race Top-2 diversified models in parallel (whoever responds first wins!)
+  const wave1 = models.slice(0, 2);
+  if (wave1.length > 0) {
+    try {
+      const winner = await Promise.any(
+        wave1.map((m) => attemptSingleModel(m, useSearch && !m.includes('gemma'), useSearch ? 5500 : 3800))
+      );
+      return { ok: true, response: winner.response, modelUsed: winner.modelUsed, failedThisTurn };
+    } catch {}
+  }
+
+  // Wave 2: Race Backup Flash-Lite + Gemma-3-27b (without search so it never hits search 429!)
+  const wave2 = [...new Set([...models.slice(2, 4), 'gemma-3-27b-it', 'gemini-flash-lite-latest'])].filter(
+    (m) => !wave1.includes(m) && !notFoundModels.has(m) && !isModelCoolingDown(m)
+  );
+  if (wave2.length > 0) {
+    try {
+      const winner2 = await Promise.any(
+        wave2.slice(0, 3).map((m) => attemptSingleModel(m, false, 4200))
+      );
+      return { ok: true, response: winner2.response, modelUsed: winner2.modelUsed, failedThisTurn };
+    } catch {}
   }
 
   return { ok: false, errorText: errors.join(' | '), failedThisTurn, transient503Models };
@@ -924,14 +929,15 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
 async function callGeminiBufferedRescue(apiKey, systemInstruction, contents, skipModels = new Set()) {
   const cleanKey = String(apiKey || '').trim();
   const allModels = await getCandidateModels(cleanKey);
-  const models = allModels.filter((m) => !skipModels.has(m));
-  const pool = models.length > 0 ? models : allModels;
+  const prioritizedPool = [...new Set(['gemma-3-27b-it', ...allModels])].filter(
+    (m) => !skipModels.has(m) && !notFoundModels.has(m) && !isModelCoolingDown(m)
+  );
+  const pool = prioritizedPool.length > 0 ? prioritizedPool : ['gemma-3-27b-it', 'gemini-flash-latest'];
   const errors = [];
 
-  for (const modelName of pool.slice(0, 4)) {
+  for (const modelName of pool.slice(0, 3)) {
     const isGemma = modelName.toLowerCase().includes('gemma');
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
-
     const payload = isGemma
       ? {
           contents: [
