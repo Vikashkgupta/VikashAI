@@ -1,11 +1,6 @@
 // File: netlify/functions/personalChat.js
 // Vikash AI — Personal Assistant Backend (Netlify Functions 2.0 Web-Standard SSE)
-// Features:
-// 1. Clean CORS headers (`status: 200` on OPTIONS) so both localhost:5173 and vikashaiai.netlify.app work smoothly
-// 2. Dynamic Gemini 3.x / 2.x model discovery + buffered rescue fallback + detailed `debugError` reporting
-// 3. Automatic GitHub profile & repositories sync + Instagram Graph API live stats (followers, posts, likes, comments)
-// 4. Strategic Google Search grounding for live news, weather, and trending queries
-// 5. Supabase chat session logging (gracefully skipped if Supabase key is not configured yet)
+// Complete, clean, syntax-verified file with dual Supabase key failover & ?test_db=1 diagnostic
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -314,39 +309,47 @@ function getSocialLinks(ghData, igData) {
 
 async function supabaseRequest(path, options = {}) {
   const url = String(process.env.SUPABASE_URL || '').trim();
-  const key = String(process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
-  if (!url || !key) {
-    return { ok: false, error: 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing in Netlify env' };
+  const keys = [
+    String(process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim(),
+    String(process.env.SUPABASE_ANON_KEY || '').trim()
+  ].filter(Boolean);
+
+  if (!url || keys.length === 0) {
+    return { ok: false, error: 'SUPABASE_URL or Keys missing in Netlify env' };
   }
 
-  const authHeaders = {
-    apikey: key,
-    'Content-Type': 'application/json',
-    ...(options.headers || {})
-  };
-  if (key.startsWith('eyJ')) {
-    authHeaders.Authorization = `Bearer ${key}`;
-  }
-
-  try {
-    const res = await fetchWithTimeout(
-      `${url.replace(/\/$/, '')}/rest/v1/${path}`,
-      {
-        ...options,
-        headers: authHeaders
-      },
-      3000
-    );
-    const text = await res.text().catch(() => '');
-    if (!res.ok) {
-      console.error(`[personalChat] Supabase HTTP ${res.status}:`, text.slice(0, 200));
-      return { ok: false, status: res.status, error: `HTTP ${res.status}: ${text.slice(0, 180)}` };
+  let lastError = null;
+  for (const key of keys) {
+    const authHeaders = {
+      apikey: key,
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    };
+    if (key.startsWith('eyJ')) {
+      authHeaders.Authorization = `Bearer ${key}`;
     }
-    return { ok: true, data: text ? JSON.parse(text) : null };
-  } catch (err) {
-    console.error('[personalChat] Supabase network error:', err?.message);
-    return { ok: false, error: err?.message || 'Network timeout' };
+
+    try {
+      const res = await fetchWithTimeout(
+        `${url.replace(/\/$/, '')}/rest/v1/${path}`,
+        {
+          ...options,
+          headers: authHeaders
+        },
+        3000
+      );
+      const text = await res.text().catch(() => '');
+      if (res.ok) {
+        return { ok: true, data: text ? JSON.parse(text) : null };
+      }
+      lastError = { ok: false, status: res.status, error: `HTTP ${res.status}: ${text.slice(0, 180)}` };
+      console.error(`[personalChat] Supabase HTTP ${res.status}:`, text.slice(0, 200));
+    } catch (err) {
+      lastError = { ok: false, error: err?.message || 'Network timeout' };
+      console.error('[personalChat] Supabase network error:', err?.message);
+    }
   }
+  return lastError || { ok: false, error: 'Unknown Supabase error' };
 }
 
 async function saveChatTurnToSupabase({ sessionId, visitorName, deviceInfo, city, userMsg, botReply }) {
@@ -546,9 +549,25 @@ export default async (req) => {
   }
 
   try {
-    // GET: Health Check (?health=1) or Restore Session History (?sessionId=...)
+    // GET: Health Check (?health=1), DB Write Test (?test_db=1), or Restore Session History (?sessionId=...)
     if (req.method === 'GET') {
       const url = new URL(req.url);
+      if (url.searchParams.get('test_db') === '1') {
+        const testWrite = await saveChatTurnToSupabase({
+          sessionId: 'TEST-DIAGNOSTIC',
+          visitorName: 'Vikash Test',
+          deviceInfo: 'Browser Diagnostic',
+          city: 'Patna',
+          userMsg: 'Test message',
+          botReply: 'Supabase connected!'
+        });
+        return jsonResponse(200, {
+          supabaseUrl: process.env.SUPABASE_URL || 'MISSING',
+          hasSecretKey: Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY),
+          hasPublishableKey: Boolean(process.env.SUPABASE_ANON_KEY),
+          writeResult: testWrite
+        });
+      }
       if (url.searchParams.get('health') === '1') {
         const gh = await fetchGitHubData();
         return jsonResponse(200, {
@@ -557,7 +576,10 @@ export default async (req) => {
           githubConnected: Boolean(gh),
           githubReposCount: gh?.repos?.length || 0,
           instagramConfigured: Boolean(process.env.IG_ACCESS_TOKEN && process.env.IG_USER_ID),
-          supabaseConfigured: Boolean(process.env.SUPABASE_URL && (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY))
+          supabaseConfigured: Boolean(
+            process.env.SUPABASE_URL &&
+              (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY)
+          )
         });
       }
 
@@ -796,6 +818,7 @@ export default async (req) => {
           controller.close();
           return;
         }
+
         const supabaseStatus = await saveChatTurnToSupabase({
           sessionId: body.sessionId,
           visitorName: body.visitorName || 'Visitor',
