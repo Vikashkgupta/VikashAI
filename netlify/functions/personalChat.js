@@ -754,16 +754,10 @@ function selectRelevantProjects(message, ghData, intent) {
   return (filtered.length > 0 ? filtered : ghData.repos).slice(0, 4);
 }
 
-function buildGracefulOfflineReply(message, customKnowledge) {
+function buildGracefulOfflineReply(message) {
   const m = String(message || '').trim().toLowerCase();
-  if (/^(hi+|hello+|hey+|namaste|haa+|haan|ok+|okay|kaise ho)/i.test(m)) {
-    return 'हाय! बताइए, आप Vikash Kumar Gupta, उनके MERN & AI प्रोजेक्ट्स, या किसी और चीज़ के बारे में क्या जानना चाहते हैं?';
-  }
-  if (/vikash|about|kaun|who|intro|parichay/i.test(m)) {
-    return (
-      customKnowledge?.aboutMe ||
-      'Vikash Kumar Gupta एक MERN Stack और AI Developer हैं, जो अभी SITM Barabanki (AKTU) से B.Tech (AIML) कर रहे हैं।'
-    );
+  if (/^(hi+|hello+|hey+|namaste|hlo+)[\s!?.]*$/i.test(m)) {
+    return 'नमस्ते! मैं Vikash AI हूँ — बताइए, आज क्या जानना है?';
   }
   return '';
 }
@@ -1172,32 +1166,39 @@ export default async (req) => {
         let buf = '';
         const reader = sseResult.response.body.getReader();
 
+        const processSseLine = (rawLine) => {
+          const trimmed = String(rawLine || '').trim();
+          if (!trimmed.startsWith('data:')) return;
+          const raw = trimmed.slice(5).trim();
+          if (!raw || raw === '[DONE]') return;
+          try {
+            const parsed = JSON.parse(raw);
+            const textPart =
+              parsed?.candidates?.[0]?.content?.parts
+                ?.filter((p) => typeof p.text === 'string' && !p.thought)
+                .map((p) => p.text)
+                .join('') || '';
+            if (textPart) {
+              fullReply += textPart;
+              sendEvent({ type: 'delta', text: textPart });
+            }
+          } catch {}
+        };
+
         try {
           while (true) {
             const { value, done } = await reader.read();
             if (done) break;
             buf += decoder.decode(value, { stream: true });
-            const chunks = buf.split('\n\n');
-            buf = chunks.pop() || '';
-
-            for (const chunk of chunks) {
-              const line = chunk.split('\n').find((l) => l.startsWith('data:'));
-              if (!line) continue;
-              const raw = line.replace(/^data:\s*/, '').trim();
-              if (!raw || raw === '[DONE]') continue;
-              try {
-                const parsed = JSON.parse(raw);
-                const textPart =
-                  parsed?.candidates?.[0]?.content?.parts
-                    ?.filter((p) => typeof p.text === 'string' && !p.thought)
-                    .map((p) => p.text)
-                    .join('') || '';
-                if (textPart) {
-                  fullReply += textPart;
-                  sendEvent({ type: 'delta', text: textPart });
-                }
-              } catch {}
+            const lines = buf.split(/\r?\n/);
+            buf = lines.pop() || '';
+            for (const line of lines) {
+              processSseLine(line);
             }
+          }
+
+          if (buf.trim()) {
+            processSseLine(buf);
           }
 
           if (!fullReply.trim()) {
@@ -1214,19 +1215,17 @@ export default async (req) => {
               if (rescueAny.ok && rescueAny.text) {
                 fullReply = rescueAny.text;
                 sendEvent({ type: 'delta', text: fullReply });
+              } else {
+                sendEvent({
+                  type: 'done',
+                  isError: true,
+                  debugError: `Empty stream from ${sseResult.modelUsed} | ${rescue.errorText || ''} | ${rescueAny.errorText || ''}`,
+                  reply: 'Something went wrong, please try again.'
+                });
+                controller.close();
+                return;
               }
             }
-          }
-
-          if (!fullReply.trim()) {
-            sendEvent({
-              type: 'done',
-              isError: true,
-              debugError: `Empty stream from ${sseResult.modelUsed} and all rescue models failed`,
-              reply: 'Something went wrong, please try again.'
-            });
-            controller.close();
-            return;
           }
 
           const supabaseStatus = await saveChatTurnToSupabase({
