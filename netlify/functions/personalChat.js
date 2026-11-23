@@ -130,12 +130,10 @@ function classifyUserIntent(message, chatMode = 'default') {
 function rankModel(name) {
   const n = String(name || '').toLowerCase();
   if (n === 'gemini-flash-lite-latest') return 100;
-  if (n.startsWith('gemini-2.0-flash-lite')) return 95;
-  if (n.startsWith('gemini-2.0-flash') && !n.includes('exp')) return 90;
-  if (n.startsWith('gemini-3.1-flash-lite')) return 85;
-  if (n === 'gemini-flash-latest') return 80;
-  if (n.startsWith('gemini-2.5-flash-lite')) return 75;
-  if (n.startsWith('gemini-2.5-flash') && !n.includes('pro')) return 70;
+  if (n === 'gemini-flash-latest') return 95;
+  if (n.startsWith('gemini-3.1-flash-lite') && !n.includes('image')) return 90;
+  if (n.startsWith('gemini-2.5-flash-lite') && !n.includes('image')) return 85;
+  if (n.startsWith('gemini-2.5-flash') && !n.includes('pro') && !n.includes('image')) return 80;
   return 40;
 }
 
@@ -145,11 +143,10 @@ function getFastModelCandidates() {
       ? cachedModels
       : [
           'gemini-flash-lite-latest',
-          'gemini-2.0-flash-lite',
-          'gemini-2.0-flash',
-          'gemini-3.1-flash-lite-preview',
           'gemini-flash-latest',
-          'gemini-2.5-flash-lite'
+          'gemini-3.1-flash-lite-preview',
+          'gemini-2.5-flash-lite',
+          'gemini-2.5-flash'
         ];
 
   const ordered = cachedWorkingModel
@@ -165,7 +162,7 @@ async function discoverGeminiModelsLazy(apiKey) {
   if (cachedModels && now - cachedModelsAt < 15 * 60 * 1000) return cachedModels;
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 1800);
+  const timer = setTimeout(() => controller.abort(), 2200);
   try {
     const res = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}`,
@@ -180,7 +177,11 @@ async function discoverGeminiModelsLazy(apiKey) {
           m.supportedGenerationMethods.includes('generateContent')
       )
       .map((m) => m.name.replace(/^models\//, ''))
-      .filter((name) => !/embedding|imagen|veo|aqa|tts|thinking|robotics|audio/i.test(name))
+      .filter(
+        (name) =>
+          !/embedding|image|imagen|veo|aqa|tts|thinking|robotics|audio|gemini-2\.0/i.test(name) &&
+          !quotaExhaustedModels.has(name)
+      )
       .sort((a, b) => rankModel(b) - rankModel(a));
 
     if (valid.length > 0) {
@@ -782,7 +783,7 @@ export default async (req) => {
 
             for (const useSearch of searchAttempts) {
               const abortCtrl = new AbortController();
-              const timer = setTimeout(() => abortCtrl.abort(), useSearch ? 8000 : 4500);
+              const timer = setTimeout(() => abortCtrl.abort(), useSearch ? 10000 : 7500);
 
               try {
                 const payload = {
@@ -808,7 +809,7 @@ export default async (req) => {
                   clearTimeout(timer);
                   const errTxt = await gRes.text().catch(() => '');
                   attemptErrors.push(`${model}[search=${useSearch}](${gRes.status}): ${errTxt.slice(0, 70)}`);
-                  if (gRes.status === 429) {
+                  if (gRes.status === 429 || gRes.status === 404) {
                     quotaExhaustedModels.add(model);
                   }
                   if (cachedWorkingModel === model) {
