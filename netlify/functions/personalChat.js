@@ -78,27 +78,30 @@ function isSupportedTextModel(name) {
   ) {
     return false;
   }
-  return n.includes('gemini');
+  return n.includes('gemini') || n.includes('gemma-3');
 }
 
 function rankModel(name) {
   const n = String(name || '').toLowerCase();
-  if (n.startsWith('gemini-3') && n.includes('flash-lite')) return 100;
-  if (n.startsWith('gemini-3') && n.includes('flash') && !n.includes('preview')) return 96;
-  if (n.startsWith('gemini-3') && n.includes('flash')) return 92;
+  if (n.startsWith('gemini-3.5') && n.includes('flash-lite')) return 100;
+  if (n.startsWith('gemini-3') && n.includes('flash-lite')) return 96;
+  if (n.startsWith('gemini-3') && n.includes('flash') && !n.includes('preview')) return 92;
   if (n === 'gemini-flash-lite-latest') return 88;
-  if (n === 'gemini-flash-latest') return 85;
+  if (n === 'gemini-flash-latest') return 84;
+  if (n.startsWith('gemini-3') && n.includes('flash')) return 80;
+  if (n.includes('gemma-3-27b')) return 60;
+  if (n.includes('gemma-3-12b')) return 55;
   return 50;
 }
 
 function getDefaultCandidateModels() {
   const base = [
     'gemini-3.5-flash-lite',
-    'gemini-3.8-flash',
     'gemini-flash-lite-latest',
     'gemini-flash-latest',
     'gemini-3.1-flash-lite-preview',
-    'gemini-3-flash-preview'
+    'gemini-3-flash-preview',
+    'gemma-3-27b-it'
   ].filter((m) => !quotaExhaustedModels.has(m) && !notFoundModels.has(m));
 
   const fallbackPool =
@@ -718,11 +721,8 @@ function selectContextActionButtons(message, socialLinks) {
   if (/discord|डिस्कॉर्ड/i.test(m) && socialLinks.discord) {
     btns.push({ label: 'Discord', href: socialLinks.discord, type: 'DISCORD' });
   }
-  if (/portfolio|website|वेबसाइट/i.test(m) && socialLinks.portfolio) {
+  if (/portfolio|वेबसाइट|website/i.test(m) && socialLinks.portfolio) {
     btns.push({ label: 'Portfolio Website', href: socialLinks.portfolio, type: 'PORTFOLIO' });
-  }
-  if (/linktree|लिंकट्री/i.test(m) && socialLinks.linktree) {
-    btns.push({ label: 'Linktree', href: socialLinks.linktree, type: 'LINKTREE' });
   }
   if (/whatsapp|व्हाट्सएप|contact|संपर्क|बात|hire|freelance|collab/i.test(m) && socialLinks.whatsapp) {
     btns.push({ label: 'WhatsApp पर मैसेज करें', href: socialLinks.whatsapp, type: 'WHATSAPP' });
@@ -732,19 +732,17 @@ function selectContextActionButtons(message, socialLinks) {
   }
   if (/social|लिंक|link|सब|all|जुड़/i.test(m) && btns.length === 0) {
     if (socialLinks.github) btns.push({ label: 'GitHub', href: socialLinks.github, type: 'GITHUB' });
-    if (socialLinks.linkedin) btns.push({ label: 'LinkedIn', href: socialLinks.linkedin, type: 'LINKEDIN' });
     if (socialLinks.instagram) btns.push({ label: 'Instagram', href: socialLinks.instagram, type: 'INSTAGRAM' });
-    if (socialLinks.facebook) btns.push({ label: 'Facebook', href: socialLinks.facebook, type: 'FACEBOOK' });
+    if (socialLinks.linkedin) btns.push({ label: 'LinkedIn', href: socialLinks.linkedin, type: 'LINKEDIN' });
     if (socialLinks.whatsapp) btns.push({ label: 'WhatsApp', href: socialLinks.whatsapp, type: 'WHATSAPP' });
   }
 
-  return btns.slice(0, 4);
+  return btns.slice(0, 3);
 }
 
 function selectRelevantProjects(message, ghData, intent) {
   if (!intent.needsGitHub || !ghData?.repos?.length) return [];
   const m = String(message || '').toLowerCase();
-  if (!/project|projects|प्रोजेक्ट|काम|work|portfolio|repo|github|बनाया/i.test(m)) return [];
 
   const filtered = ghData.repos.filter((r) => {
     const hay = `${r.name} ${r.description} ${r.tags.join(' ')}`.toLowerCase();
@@ -756,25 +754,51 @@ function selectRelevantProjects(message, ghData, intent) {
   return (filtered.length > 0 ? filtered : ghData.repos).slice(0, 4);
 }
 
+function buildGracefulOfflineReply(message, customKnowledge) {
+  const m = String(message || '').trim().toLowerCase();
+  if (/^(hi+|hello+|hey+|namaste|haa+|haan|ok+|okay|kaise ho)/i.test(m)) {
+    return 'हाय! बताइए, आप Vikash Kumar Gupta, उनके MERN & AI प्रोजेक्ट्स, या किसी और चीज़ के बारे में क्या जानना चाहते हैं?';
+  }
+  if (/vikash|about|kaun|who|intro|parichay/i.test(m)) {
+    return (
+      customKnowledge?.aboutMe ||
+      'Vikash Kumar Gupta एक MERN Stack और AI Developer हैं, जो अभी SITM Barabanki (AKTU) से B.Tech (AIML) कर रहे हैं।'
+    );
+  }
+  return '';
+}
+
 async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearch = false) {
   const cleanKey = String(apiKey || '').trim();
   const models = await getCandidateModels(cleanKey);
   const errors = [];
   const failedThisTurn = new Set();
+  const transient503Models = [];
 
   for (const modelName of models.slice(0, 4)) {
+    const isGemma = modelName.toLowerCase().includes('gemma');
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse`;
-    const attempts = useSearch ? [true, false] : [false];
+    const attempts = useSearch && !isGemma ? [true, false] : [false];
 
     for (const withSearch of attempts) {
-      const payload = {
-        systemInstruction: { parts: [{ text: systemInstruction }] },
-        contents,
-        generationConfig: {
-          temperature: withSearch ? 0.25 : 0.55
-        }
-      };
-      if (withSearch) {
+      const payload = isGemma
+        ? {
+            contents: [
+              { role: 'user', parts: [{ text: `INSTRUCTIONS:\n${systemInstruction}` }] },
+              { role: 'model', parts: [{ text: 'Understood.' }] },
+              ...contents
+            ],
+            generationConfig: { temperature: 0.55 }
+          }
+        : {
+            systemInstruction: { parts: [{ text: systemInstruction }] },
+            contents,
+            generationConfig: {
+              temperature: withSearch ? 0.25 : 0.55
+            }
+          };
+
+      if (withSearch && !isGemma) {
         payload.tools = [{ google_search: {} }];
       }
 
@@ -789,7 +813,7 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
             },
             body: JSON.stringify(payload)
           },
-          withSearch ? 12000 : 7500
+          withSearch ? 11000 : 6500
         );
 
         if (res.ok && res.body) {
@@ -799,19 +823,26 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
 
         const errTxt = await res.text().catch(() => '');
         errors.push(`${modelName}[search=${withSearch}](${res.status}): ${errTxt.slice(0, 90)}`);
-        failedThisTurn.add(modelName);
 
         if (res.status === 404) {
           notFoundModels.add(modelName);
+          failedThisTurn.add(modelName);
           if (cachedWorkingModel === modelName) cachedWorkingModel = null;
           break;
         }
         if (res.status === 429) {
           quotaExhaustedModels.add(modelName);
+          failedThisTurn.add(modelName);
           if (cachedWorkingModel === modelName) cachedWorkingModel = null;
           break;
         }
-        if (res.status === 503 || res.status === 500 || res.status === 400) {
+        if (res.status === 503) {
+          transient503Models.push(modelName);
+          if (cachedWorkingModel === modelName) cachedWorkingModel = null;
+          break;
+        }
+        if (res.status === 500 || res.status === 400) {
+          failedThisTurn.add(modelName);
           if (cachedWorkingModel === modelName) cachedWorkingModel = null;
           break;
         }
@@ -823,7 +854,7 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
     }
   }
 
-  return { ok: false, errorText: errors.join(' | '), failedThisTurn };
+  return { ok: false, errorText: errors.join(' | '), failedThisTurn, transient503Models };
 }
 
 async function callGeminiBufferedRescue(apiKey, systemInstruction, contents, skipModels = new Set()) {
@@ -833,8 +864,24 @@ async function callGeminiBufferedRescue(apiKey, systemInstruction, contents, ski
   const pool = models.length > 0 ? models : allModels;
   const errors = [];
 
-  for (const modelName of pool.slice(0, 3)) {
+  for (const modelName of pool.slice(0, 4)) {
+    const isGemma = modelName.toLowerCase().includes('gemma');
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
+
+    const payload = isGemma
+      ? {
+          contents: [
+            { role: 'user', parts: [{ text: `INSTRUCTIONS:\n${systemInstruction}` }] },
+            { role: 'model', parts: [{ text: 'Understood.' }] },
+            ...contents
+          ],
+          generationConfig: { temperature: 0.55 }
+        }
+      : {
+          systemInstruction: { parts: [{ text: systemInstruction }] },
+          contents,
+          generationConfig: { temperature: 0.55 }
+        };
 
     try {
       const res = await fetchWithTimeout(
@@ -845,15 +892,9 @@ async function callGeminiBufferedRescue(apiKey, systemInstruction, contents, ski
             'Content-Type': 'application/json',
             'x-goog-api-key': cleanKey
           },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: systemInstruction }] },
-            contents,
-            generationConfig: {
-              temperature: 0.55
-            }
-          })
+          body: JSON.stringify(payload)
         },
-        7500
+        6500
       );
 
       if (res.ok) {
@@ -1010,9 +1051,9 @@ export default async (req) => {
       clientDevice: body.clientDevice,
       ist
     });
-
+    const historyLimit = intent.isGreetingOrShort ? 4 : 6;
     const contents = buildValidGeminiContents(
-      Array.isArray(body.history) ? body.history.slice(-8) : [],
+      Array.isArray(body.history) ? body.history.slice(-historyLimit) : [],
       userMessage
     );
 
@@ -1036,8 +1077,16 @@ export default async (req) => {
     const sseResult = await openGeminiSSEStream(apiKey, systemInstruction, contents, intent.needsGoogleSearch);
 
     if (!sseResult.ok) {
+      // If models failed only due to transient 503 high demand, pause 750ms and retry them in rescue!
+      if (Array.isArray(sseResult.transient503Models) && sseResult.transient503Models.length > 0) {
+        await new Promise((r) => setTimeout(r, 750));
+      }
+
       const rescue = await callGeminiBufferedRescue(apiKey, systemInstruction, contents, sseResult.failedThisTurn);
-      if (rescue.ok && rescue.text) {
+      const gracefulText = !rescue.ok ? buildGracefulOfflineReply(userMessage, body.customKnowledge) : '';
+      const finalRescueText = rescue.ok && rescue.text ? rescue.text : gracefulText;
+
+      if (finalRescueText) {
         const supabaseStatus = await saveChatTurnToSupabase({
           sessionId: body.sessionId,
           visitorName: effectiveVisitorName,
@@ -1045,20 +1094,20 @@ export default async (req) => {
           city: body.clientDevice?.locationText || '',
           history: body.history,
           userMsg: userMessage,
-          botReply: rescue.text
+          botReply: finalRescueText
         });
 
         const encoder = new TextEncoder();
         const fallbackStream = new ReadableStream({
           start(controller) {
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'delta', text: rescue.text })}\n\n`));
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'delta', text: finalRescueText })}\n\n`));
             controller.enqueue(
               encoder.encode(
                 `data: ${JSON.stringify({
                   type: 'done',
                   isError: false,
-                  reply: rescue.text,
-                  modelUsed: rescue.modelUsed,
+                  reply: finalRescueText,
+                  modelUsed: rescue.modelUsed || 'instant-fallback',
                   intentUsed: intent,
                   detectedVisitorName: effectiveVisitorName,
                   recommendedProjects,
