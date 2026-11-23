@@ -514,36 +514,27 @@ async function saveChatTurnToSupabase({
   }
   return { logged: true, sessionId, messageCount: nextCount };
 }
+function formatNoteRelativeAge(createdAtIso) {
+  if (!createdAtIso) return '';
+  const createdMs = new Date(createdAtIso).getTime();
+  if (!createdMs || Number.isNaN(createdMs)) return '';
 
-function buildValidGeminiContents(history, userMessage) {
-  const cleaned = [];
+  const savedDateStr = new Date(createdMs).toLocaleDateString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric'
+  });
 
-  for (const h of history) {
-    if (!h || !h.text) continue;
-    const role = h.role === 'user' ? 'user' : 'model';
-    const text = String(h.text).trim();
-    if (!text) continue;
-    if (text.includes('Something went wrong')) continue;
+  const diffDays = Math.max(0, Math.floor((Date.now() - createdMs) / (1000 * 60 * 60 * 24)));
+  const ageLabel =
+    diffDays === 0
+      ? 'Today'
+      : diffDays === 1
+      ? 'Yesterday'
+      : `${diffDays} days ago`;
 
-    if (cleaned.length === 0 && role === 'model') continue;
-
-    if (cleaned.length > 0 && cleaned[cleaned.length - 1].role === role) {
-      cleaned[cleaned.length - 1].parts[0].text += '\n' + text;
-    } else {
-      cleaned.push({ role, parts: [{ text }] });
-    }
-  }
-
-  const finalUserText = String(userMessage || '').trim();
-  if (cleaned.length > 0 && cleaned[cleaned.length - 1].role === 'user') {
-    if (cleaned[cleaned.length - 1].parts[0].text !== finalUserText) {
-      cleaned[cleaned.length - 1].parts[0].text += '\n' + finalUserText;
-    }
-  } else {
-    cleaned.push({ role: 'user', parts: [{ text: finalUserText }] });
-  }
-
-  return cleaned;
+  return `Saved on: ${savedDateStr} (${ageLabel})`;
 }
 
 function buildModularSystemPrompt({
@@ -561,7 +552,7 @@ function buildModularSystemPrompt({
   const lines = [
     `You are "Vikash AI" (Personal Assistant of Vikash Kumar Gupta).`,
     `Style: Friendly, smart, natural Hinglish/Hindi (or English if user asks in English). Keep replies crisp and well-formatted.`,
-    `Date/Time (IST): ${ist.dateStr}, ${ist.timeStr}`
+    `CURRENT REAL-WORLD DATE & TIME (IST): ${ist.dateStr}, ${ist.timeStr}`
   ];
 
   if (visitorName && visitorName !== 'Visitor') {
@@ -599,12 +590,21 @@ function buildModularSystemPrompt({
     }
   }
 
-  // Always inject Vikash's latest saved live notes when bio/projects/socials are asked
-  if ((intent.needsAboutBio || intent.needsGitHub || intent.needsSocialLinks) && Array.isArray(liveSupabaseNotes) && liveSupabaseNotes.length > 0) {
+  // Always inject Vikash's saved live notes WITH exact `Saved on` timestamp & relative age
+  if (
+    (intent.needsAboutBio || intent.needsGitHub || intent.needsSocialLinks) &&
+    Array.isArray(liveSupabaseNotes) &&
+    liveSupabaseNotes.length > 0
+  ) {
     const formattedNotes = liveSupabaseNotes
-      .map((n) => `- [${n.category || 'General'}]: ${n.note_text}`)
+      .map((n) => {
+        const timeTag = formatNoteRelativeAge(n.created_at);
+        return `- [${timeTag ? `${timeTag} | ` : ''}Category: ${n.category || 'General'}]: ${n.note_text}`;
+      })
       .join('\n');
-    lines.push(`LATEST LIVE UPDATES ADDED BY VIKASH (Highest Priority):\n${formattedNotes}`);
+    lines.push(
+      `LIVE NOTES ADDED BY VIKASH (Compare each note's "Saved on" date against TODAY'S DATE "${ist.dateStr}" — if a note mentions an event/exam/month that has already passed as of today, treat it as a PAST update from that date, NOT as something happening right now!):\n${formattedNotes}`
+    );
   }
 
   if (intent.needsGitHub) {
