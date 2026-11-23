@@ -762,20 +762,26 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
     ? cachedDiscoveredModels.filter((m) => !quotaExhaustedModels.has(m) && !notFoundModels.has(m))
     : getDefaultCandidateModels();
   const errors = [];
+  const failedThisTurn = new Set();
 
-  for (const modelName of models.slice(0, 4)) {
+  for (const modelName of models.slice(0, 5)) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse`;
     const attempts = useSearch ? [true, false] : [false];
 
     for (const withSearch of attempts) {
+      const genConfig = {
+        temperature: withSearch ? 0.3 : 0.65,
+        maxOutputTokens: 700
+      };
+      // Only Gemini 3+ models accept thinkingConfig; sending it to flash-lite-latest causes HTTP 400!
+      if (modelName.startsWith('gemini-3')) {
+        genConfig.thinkingConfig = { thinkingBudget: 0 };
+      }
+
       const payload = {
         systemInstruction: { parts: [{ text: systemInstruction }] },
         contents,
-        generationConfig: {
-          temperature: withSearch ? 0.3 : 0.65,
-          maxOutputTokens: 700,
-          thinkingConfig: { thinkingBudget: 0 }
-        }
+        generationConfig: genConfig
       };
       if (withSearch) {
         payload.tools = [{ google_search: {} }];
@@ -792,16 +798,17 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
             },
             body: JSON.stringify(payload)
           },
-          withSearch ? 22000 : 18000
+          withSearch ? 18000 : 12000
         );
 
         if (res.ok && res.body) {
           cachedWorkingModel = modelName;
-          return { ok: true, response: res, modelUsed: modelName };
+          return { ok: true, response: res, modelUsed: modelName, failedThisTurn };
         }
 
         const errTxt = await res.text().catch(() => '');
         errors.push(`${modelName}[search=${withSearch}](${res.status}): ${errTxt.slice(0, 90)}`);
+        failedThisTurn.add(modelName);
 
         if (res.status === 404) {
           notFoundModels.add(modelName);
@@ -813,28 +820,38 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
           if (cachedWorkingModel === modelName) cachedWorkingModel = null;
           break;
         }
-        if (res.status === 503 || res.status === 500) {
+        if (res.status === 503 || res.status === 500 || res.status === 400) {
           if (cachedWorkingModel === modelName) cachedWorkingModel = null;
           break;
         }
       } catch (err) {
         errors.push(`${modelName}[search=${withSearch}]: ${err?.message || 'timeout'}`);
+        failedThisTurn.add(modelName);
         if (cachedWorkingModel === modelName) cachedWorkingModel = null;
       }
     }
   }
 
   refreshDiscoveredModelsInBackground(cleanKey);
-  return { ok: false, errorText: errors.join(' | ') };
+  return { ok: false, errorText: errors.join(' | '), failedThisTurn };
 }
 
-async function callGeminiBufferedRescue(apiKey, systemInstruction, contents) {
+async function callGeminiBufferedRescue(apiKey, systemInstruction, contents, skipModels = new Set()) {
   const cleanKey = String(apiKey || '').trim();
-  const models = getDefaultCandidateModels();
+  const models = getDefaultCandidateModels().filter((m) => !skipModels.has(m));
+  if (models.length === 0) return { ok: false, errorText: '' };
   const errors = [];
 
-  for (const modelName of models.slice(0, 3)) {
+  for (const modelName of models.slice(0, 2)) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
+    const genConfig = {
+      temperature: 0.65,
+      maxOutputTokens: 700
+    };
+    if (modelName.startsWith('gemini-3')) {
+      genConfig.thinkingConfig = { thinkingBudget: 0 };
+    }
+
     try {
       const res = await fetchWithTimeout(
         endpoint,
@@ -847,14 +864,10 @@ async function callGeminiBufferedRescue(apiKey, systemInstruction, contents) {
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: systemInstruction }] },
             contents,
-            generationConfig: {
-              temperature: 0.65,
-              maxOutputTokens: 700,
-              thinkingConfig: { thinkingBudget: 0 }
-            }
+            generationConfig: genConfig
           })
         },
-        15000
+        10000
       );
 
       if (res.ok) {
@@ -1037,7 +1050,7 @@ export default async (req) => {
     const sseResult = await openGeminiSSEStream(apiKey, systemInstruction, contents, intent.needsGoogleSearch);
 
     if (!sseResult.ok) {
-      const rescue = await callGeminiBufferedRescue(apiKey, systemInstruction, contents);
+      const rescue = await callGeminiBufferedRescue(apiKey, systemInstruction, contents, sseResult.failedThisTurn);
       if (rescue.ok && rescue.text) {
         const supabaseStatus = await saveChatTurnToSupabase({
           sessionId: body.sessionId,
