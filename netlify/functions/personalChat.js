@@ -390,38 +390,6 @@ async function saveChatTurnToSupabase({ sessionId, visitorName, deviceInfo, city
   }
 }
 
-async function saveChatTurnToSupabase({ sessionId, visitorName, deviceInfo, city, userMsg, botReply }) {
-  if (!sessionId) return;
-  try {
-    const existing = await supabaseRequest(
-      `personal_chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=conversation,message_count`
-    );
-    const prevConv = Array.isArray(existing?.[0]?.conversation) ? existing[0].conversation : [];
-    const nowIso = new Date().toISOString();
-    const updatedConv = [
-      ...prevConv,
-      { role: 'user', text: userMsg, ts: nowIso },
-      { role: 'model', text: botReply, ts: nowIso }
-    ].slice(-40);
-
-    await supabaseRequest('personal_chat_sessions?on_conflict=session_id', {
-      method: 'POST',
-      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-      body: JSON.stringify({
-        session_id: sessionId,
-        visitor_name: visitorName || 'Visitor',
-        device_info: deviceInfo || '',
-        city: city || '',
-        message_count: (existing?.[0]?.message_count || 0) + 1,
-        conversation: updatedConv,
-        last_active: nowIso
-      })
-    });
-  } catch (err) {
-    console.warn('[personalChat] Supabase save skipped:', err?.message);
-  }
-}
-
 function shouldEnableGoogleSearch(message) {
   const m = String(message || '').toLowerCase();
   return /news|ताज़ा|समाचार|खबर|weather|मौसम|temperature|trending|ट्रेंडिंग|cricket|match|score|price|stock|latest|today|yesterday|आज|कल|who is|what is|search|इंटरनेट|google/i.test(m);
