@@ -1,11 +1,6 @@
 // File: netlify/functions/personalChat.js
 // Vikash AI — Personal Assistant Backend (Netlify Functions 2.0 Web-Standard SSE)
-// Features:
-// - 0ms Intent-Based Smart Routing (only calls GitHub, Instagram, or Google Search when needed!)
-// - Zero pre-flight model discovery delay (fires straight to active Gemini models with 18s window & thinkingBudget: 0)
-// - Auto-blocks 404/429 models and fails over smoothly
-// - Recruiter Mode (`chatMode === 'recruiter'`) & Smart Visitor Name Memory
-// - In-Chat Lead Card trigger + Supabase session persistence
+// Reads both `customKnowledge.js` AND live notes saved in Supabase `vikash_custom_notes` (cached 2 min for 0ms speed)!
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -18,7 +13,6 @@ let cachedWorkingModel = null;
 let cachedDiscoveredModels = null;
 let cachedDiscoveredAt = 0;
 
-// Permanently skip retired 2.0/2.5 models & exhausted quota models in this instance
 const notFoundModels = new Set([
   'gemini-2.0-flash',
   'gemini-2.0-flash-lite',
@@ -33,6 +27,9 @@ let cachedGithubAt = 0;
 
 let cachedInstagram = null;
 let cachedInstagramAt = 0;
+
+let cachedCustomNotes = null;
+let cachedCustomNotesAt = 0;
 
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), {
@@ -136,9 +133,6 @@ async function refreshDiscoveredModelsInBackground(apiKey) {
   } catch {}
 }
 
-// ============================================================================
-// 0ms INTENT CLASSIFIER — Routes each prompt ONLY to the data sources it needs!
-// ============================================================================
 function classifyUserIntent(message, chatMode = 'default') {
   const m = String(message || '').trim().toLowerCase();
 
@@ -174,7 +168,7 @@ function classifyUserIntent(message, chatMode = 'default') {
   const needsAboutBio =
     chatMode === 'recruiter' ||
     needsGitHub ||
-    /vikash|विकास|about|intro|parichay|परिचय|kaun|who|college|btech|aiml|diploma|study|पढ़ाई|education|aktu|unnao|mairwa|barabanki|siwan/i.test(
+    /vikash|विकास|about|intro|parichay|परिचय|kaun|who|college|btech|aiml|diploma|study|पढ़ाई|education|aktu|unnao|mairwa|barabanki|siwan|training|award|softpro|makartaj|update|नया/i.test(
       m
     );
 
@@ -337,12 +331,12 @@ function getSocialLinks(ghData, igData, customKnowledge) {
   const ghUser = String(process.env.GITHUB_USERNAME || 'Vikashkgupta').trim();
 
   const ghUrl = String(process.env.GITHUB_URL || ghData?.htmlUrl || `https://github.com/${ghUser}`).trim();
-  const igUrl = String(process.env.IG_URL || (igData?.username ? `https://instagram.com/${igData.username}` : '')).trim();
+  const igUrl = String(process.env.IG_URL || extra.instagram || (igData?.username ? `https://instagram.com/${igData.username}` : '')).trim();
   const twitterUrl = String(
     process.env.TWITTER_URL || (ghData?.twitterUsername ? `https://x.com/${ghData.twitterUsername}` : '')
   ).trim();
   const discordUrl = String(process.env.DISCORD_URL || '').trim();
-  const facebookUrl = String(process.env.FACEBOOK_URL || '').trim();
+  const facebookUrl = String(process.env.FACEBOOK_URL || extra.facebook || '').trim();
   const linkedinUrl = String(process.env.LINKEDIN_URL || extra.linkedin || '').trim();
   const portfolioUrl = String(process.env.PORTFOLIO_URL || extra.portfolio || '').trim();
   const linktreeUrl = String(process.env.LINKTREE_URL || extra.linktree || '').trim();
@@ -351,7 +345,7 @@ function getSocialLinks(ghData, igData, customKnowledge) {
   const whatsappUrl = whatsappRaw ? `https://wa.me/${whatsappRaw}` : '';
   const phoneRaw = String(process.env.PUBLIC_PHONE || '').trim();
   const phoneUrl = phoneRaw ? `tel:${phoneRaw.replace(/\s+/g, '')}` : '';
-  const email = String(process.env.CONTACT_EMAIL || extra.alternateEmail || '').trim();
+  const email = String(process.env.CONTACT_EMAIL || extra.email || '').trim();
 
   return {
     github: ghUrl,
@@ -431,6 +425,25 @@ async function supabaseRequest(path, options = {}, timeoutMs = 2500) {
   return lastResult;
 }
 
+// Fetch live notes saved from Admin Dashboard (`vikash_custom_notes`) with 2-minute cache
+async function fetchLiveCustomNotes() {
+  const now = Date.now();
+  if (cachedCustomNotes && now - cachedCustomNotesAt < 2 * 60 * 1000) {
+    return cachedCustomNotes;
+  }
+  const res = await supabaseRequest(
+    'vikash_custom_notes?select=category,note_text,created_at&order=created_at.desc&limit=40',
+    { method: 'GET' },
+    1800
+  );
+  if (res.ok && Array.isArray(res.data)) {
+    cachedCustomNotes = res.data;
+    cachedCustomNotesAt = now;
+    return res.data;
+  }
+  return cachedCustomNotes || [];
+}
+
 async function saveChatTurnToSupabase({
   sessionId,
   visitorName,
@@ -497,7 +510,6 @@ async function saveChatTurnToSupabase({
   );
 
   if (!writeRes.ok) {
-    console.error('[personalChat] Supabase write failed:', writeRes.error);
     return { logged: false, reason: writeRes.error };
   }
   return { logged: true, sessionId, messageCount: nextCount };
@@ -534,12 +546,12 @@ function buildValidGeminiContents(history, userMessage) {
   return cleaned;
 }
 
-// Modular Slim System Prompt — injects ONLY the sections needed by the user's intent
 function buildModularSystemPrompt({
   intent,
   chatMode,
   visitorName,
   customKnowledge,
+  liveSupabaseNotes,
   ghData,
   igData,
   socialLinks,
@@ -570,6 +582,12 @@ function buildModularSystemPrompt({
 
   if (intent.needsAboutBio && customKnowledge) {
     lines.push(`ABOUT VIKASH:\n${customKnowledge.aboutMe || ''}`);
+    if (Array.isArray(customKnowledge.education)) {
+      lines.push(`EDUCATION:\n${JSON.stringify(customKnowledge.education)}`);
+    }
+    if (Array.isArray(customKnowledge.trainingsAndAwards)) {
+      lines.push(`TRAININGS & AWARDS:\n${JSON.stringify(customKnowledge.trainingsAndAwards)}`);
+    }
     if (Array.isArray(customKnowledge.skills)) {
       lines.push(`SKILLS: ${customKnowledge.skills.join(', ')}`);
     }
@@ -579,6 +597,14 @@ function buildModularSystemPrompt({
     if (customKnowledge.extraNotes) {
       lines.push(`NOTES: ${customKnowledge.extraNotes}`);
     }
+  }
+
+  // Always inject Vikash's latest saved live notes when bio/projects/socials are asked
+  if ((intent.needsAboutBio || intent.needsGitHub || intent.needsSocialLinks) && Array.isArray(liveSupabaseNotes) && liveSupabaseNotes.length > 0) {
+    const formattedNotes = liveSupabaseNotes
+      .map((n) => `- [${n.category || 'General'}]: ${n.note_text}`)
+      .join('\n');
+    lines.push(`LATEST LIVE UPDATES ADDED BY VIKASH (Highest Priority):\n${formattedNotes}`);
   }
 
   if (intent.needsGitHub) {
@@ -895,7 +921,6 @@ export default async (req) => {
 
     const ist = getISTDateTime();
 
-    // Fast dynamic welcome greeting (zero GitHub/IG/Model-list overhead)
     if (body.isWelcomeGreeting) {
       const modeHint =
         body.chatMode === 'recruiter'
@@ -922,13 +947,14 @@ export default async (req) => {
     const chatMode = String(body.chatMode || 'default');
     const intent = classifyUserIntent(userMessage, chatMode);
 
-    // 0ms Smart Routing: Fetch GitHub / Instagram ONLY if this prompt actually asks for them!
-    const [ghData, igData] = await Promise.all([
+    const [ghData, igData, liveSupabaseNotes] = await Promise.all([
       intent.needsGitHub ? fetchGitHubData() : Promise.resolve(cachedGithub),
-      intent.needsInstagramStats ? fetchInstagramData() : Promise.resolve(cachedInstagram)
+      intent.needsInstagramStats ? fetchInstagramData() : Promise.resolve(cachedInstagram),
+      intent.needsAboutBio || intent.needsGitHub || intent.needsSocialLinks
+        ? fetchLiveCustomNotes()
+        : Promise.resolve(cachedCustomNotes || [])
     ]);
 
-    // Warm up GitHub cache silently in the background on casual greetings so next query is instant
     if (!intent.needsGitHub && !cachedGithub) {
       fetchGitHubData().catch(() => {});
     }
@@ -943,6 +969,7 @@ export default async (req) => {
       chatMode,
       visitorName: effectiveVisitorName,
       customKnowledge: body.customKnowledge,
+      liveSupabaseNotes,
       ghData,
       igData,
       socialLinks,
@@ -1023,8 +1050,6 @@ export default async (req) => {
       }
 
       const combinedErr = `${sseResult.errorText} | ${rescue.errorText || ''}`;
-      console.error('[personalChat] All Gemini models failed:', combinedErr);
-
       const encoder = new TextEncoder();
       const errStream = new ReadableStream({
         start(controller) {
@@ -1137,7 +1162,6 @@ export default async (req) => {
           });
           controller.close();
         } catch (streamErr) {
-          console.error('[personalChat] Stream read error:', streamErr);
           sendEvent({
             type: 'done',
             isError: !fullReply.trim(),
@@ -1158,7 +1182,6 @@ export default async (req) => {
       }
     });
   } catch (err) {
-    console.error('[personalChat] Fatal handler error:', err);
     return jsonResponse(500, {
       success: false,
       isError: true,

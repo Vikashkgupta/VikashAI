@@ -1,10 +1,5 @@
 // File: netlify/functions/adminDashboard.js
-// Vikash AI — Password-Protected Monitoring Dashboard API + Click Analytics + Session Management
-// Features:
-// - Full conversation history per visitor session (for click-to-expand view)
-// - One-click Delete Session (`action: 'delete_session'`) to clean spam/test chats
-// - Top Asked Topics / Keywords extraction across all visitor messages
-// - Active Now status calculation & Click Analytics
+// Vikash AI — Password-Protected Monitoring Dashboard API + Voice/Manual Live Knowledge Manager (Supabase)
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -27,8 +22,9 @@ async function supabaseFetch(path, options = {}) {
     String(process.env.SUPABASE_ANON_KEY || '').trim()
   ].filter(Boolean);
 
-  if (!url || keys.length === 0) return { ok: false, data: null };
+  if (!url || keys.length === 0) return { ok: false, data: null, error: 'Missing Supabase credentials' };
 
+  let lastErr = 'Unknown Supabase error';
   for (const key of keys) {
     const authHeaders = {
       apikey: key,
@@ -49,16 +45,16 @@ async function supabaseFetch(path, options = {}) {
       });
       const text = await res.text().catch(() => '');
       if (res.ok) {
-        return { ok: true, data: text ? JSON.parse(text) : null };
+        return { ok: true, data: text ? JSON.parse(text) : null, error: null };
       }
-      console.error(`[adminDashboard] Supabase HTTP ${res.status}:`, text.slice(0, 160));
+      lastErr = `HTTP ${res.status}: ${text.slice(0, 180)}`;
     } catch (err) {
-      console.warn('[adminDashboard] Supabase fetch warning:', err?.message);
+      lastErr = err?.message || 'Fetch error';
     } finally {
       clearTimeout(timer);
     }
   }
-  return { ok: false, data: null };
+  return { ok: false, data: null, error: lastErr };
 }
 
 function extractTopTopics(sessions) {
@@ -108,7 +104,7 @@ export default async (req) => {
 
     const action = String(body.action || 'stats');
 
-    // 1. Public click tracking (no admin password required)
+    // 1. Public click tracking
     if (action === 'track_click') {
       const eventType = String(body.eventType || 'social_link').slice(0, 40);
       const label = String(body.label || 'Link').slice(0, 120);
@@ -129,7 +125,7 @@ export default async (req) => {
       return jsonRes(200, { success: true });
     }
 
-    // 2. Password-protected Admin endpoints
+    // 2. Password check for all Admin endpoints
     const adminPassword = String(process.env.ADMIN_PASSWORD || '').trim();
     if (!adminPassword) {
       return jsonRes(500, {
@@ -143,16 +139,58 @@ export default async (req) => {
       return jsonRes(401, { success: false, error: 'गलत पासवर्ड! कृपया सही पासवर्ड डालें।' });
     }
 
-    if (action === 'login') {
-      return jsonRes(200, { success: true, authorized: true });
+    // 3. Save a new live note to `vikash_custom_notes`
+    if (action === 'save_note') {
+      const category = String(body.category || 'General').trim().slice(0, 40);
+      const noteText = String(body.noteText || '').trim();
+      if (!noteText) {
+        return jsonRes(400, { success: false, error: 'कृपया सेव करने से पहले कुछ टेक्स्ट लिखें या बोलें।' });
+      }
+      const saveRes = await supabaseFetch('vikash_custom_notes', {
+        method: 'POST',
+        headers: { Prefer: 'return=representation' },
+        body: JSON.stringify({
+          category,
+          note_text: noteText
+        })
+      });
+      if (!saveRes.ok) {
+        return jsonRes(500, {
+          success: false,
+          error: `Supabase Error (${saveRes.error}) — पहले Supabase में vikash_custom_notes टेबल बनाएं।`
+        });
+      }
+      return jsonRes(200, { success: true, note: saveRes.data?.[0] || null });
     }
 
-    // 3. Delete a visitor session (`action: 'delete_session'`)
+    // 4. Update an existing note
+    if (action === 'update_note') {
+      const id = Number(body.id);
+      const category = String(body.category || 'General').trim().slice(0, 40);
+      const noteText = String(body.noteText || '').trim();
+      if (!id || !noteText) {
+        return jsonRes(400, { success: false, error: 'Invalid note ID or empty text' });
+      }
+      const updRes = await supabaseFetch(`vikash_custom_notes?id=eq.${id}`, {
+        method: 'PATCH',
+        headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({ category, note_text: noteText })
+      });
+      return jsonRes(200, { success: updRes.ok, error: updRes.error });
+    }
+
+    // 5. Delete a note
+    if (action === 'delete_note') {
+      const id = Number(body.id);
+      if (!id) return jsonRes(400, { success: false, error: 'Missing note id' });
+      const delRes = await supabaseFetch(`vikash_custom_notes?id=eq.${id}`, { method: 'DELETE' });
+      return jsonRes(200, { success: delRes.ok });
+    }
+
+    // 6. Delete a visitor session
     if (action === 'delete_session') {
       const targetId = String(body.sessionId || '').trim();
-      if (!targetId) {
-        return jsonRes(400, { success: false, error: 'Missing sessionId' });
-      }
+      if (!targetId) return jsonRes(400, { success: false, error: 'Missing sessionId' });
       const delRes = await supabaseFetch(
         `personal_chat_sessions?session_id=eq.${encodeURIComponent(targetId)}`,
         { method: 'DELETE' }
@@ -160,18 +198,22 @@ export default async (req) => {
       return jsonRes(200, { success: delRes.ok });
     }
 
-    // 4. Fetch full monitoring stats & complete visitor conversations
-    const [sessionsRes, clicksRes] = await Promise.all([
+    // 7. Fetch full dashboard stats + visitor sessions + saved live notes
+    const [sessionsRes, clicksRes, notesRes] = await Promise.all([
       supabaseFetch(
         'personal_chat_sessions?select=session_id,visitor_name,device_info,city,message_count,conversation,last_active&order=last_active.desc&limit=50'
       ),
       supabaseFetch(
         'personal_click_events?select=id,event_type,label,target_url,created_at&order=created_at.desc&limit=80'
+      ),
+      supabaseFetch(
+        'vikash_custom_notes?select=id,category,note_text,created_at&order=created_at.desc&limit=50'
       )
     ]);
 
     const sessions = Array.isArray(sessionsRes.data) ? sessionsRes.data : [];
     const clicks = Array.isArray(clicksRes.data) ? clicksRes.data : [];
+    const notes = Array.isArray(notesRes.data) ? notesRes.data : [];
 
     const totalSessions = sessions.length;
     const totalMessages = sessions.reduce((acc, s) => acc + Number(s.message_count || 0), 0);
@@ -210,6 +252,7 @@ export default async (req) => {
         topTopics
       },
       integrations,
+      customNotes: notes,
       recentSessions: sessions.map((s) => {
         const conv = Array.isArray(s.conversation) ? s.conversation : [];
         const lastActiveMs = s.last_active ? new Date(s.last_active).getTime() : 0;

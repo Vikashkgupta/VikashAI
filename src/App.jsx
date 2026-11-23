@@ -5,10 +5,10 @@
 // - Send locked while streaming + Stop (■) button to abort response mid-stream
 // - Subtle normal-sized 3 bouncing dots (`w-1.5 h-1.5`)
 // - Top-right 3-dots button cleanly commented out for future buttons
-// - Smart Auto-Scroll lock (stops pulling down if user scrolls up to read earlier messages)
-// - Recruiter Mode (`?mode=recruiter`) & In-Chat "Connect with Vikash" Quick Lead Card
-// - Full Admin Monitoring Dashboard: Search bar, Active Now dot, Top Asked Topics,
-//   Click-to-Expand Full Conversation History, Copy Transcript & Delete Session
+// - Smart Auto-Scroll lock & Recruiter Mode (`?mode=recruiter`)
+// - Admin Monitoring Dashboard with 2 Tabs:
+//   1. `Analytics`: Search, Active Now dot, Top Topics, Click-to-Expand Full History, Copy & Delete
+//   2. `My Knowledge`: Voice-to-Text (`🎤 Speak`) + Manual Edit Textarea + Category + Save/Edit/Delete in Supabase (`vikash_custom_notes`) — NEVER auto-sends on speech!
 
 import React, { useState, useEffect, useRef } from 'react';
 import { VIKASH_CUSTOM_KNOWLEDGE } from './data/customKnowledge';
@@ -40,8 +40,7 @@ function getOrCreateSessionId() {
       localStorage.setItem(key, id);
     }
     return id;
-  } catch (err) {
-    console.warn('[Vikash AI Storage Warning]:', err);
+  } catch {
     return 'VK-GUEST';
   }
 }
@@ -180,7 +179,6 @@ function FormattedMessage({ text }) {
   );
 }
 
-// In-Chat Quick Lead Card when visitor asks about hiring, internship, or freelance project
 function ConnectLeadCard({ whatsappNumber = '919931890824', defaultName = '', onSubmitted }) {
   const [leadName, setLeadName] = useState(defaultName !== 'Visitor' ? defaultName : '');
   const [leadPurpose, setLeadPurpose] = useState('Internship / Job');
@@ -278,10 +276,7 @@ export default function App() {
   const [toastText, setToastText] = useState('');
   const [cachedGeoStr, setCachedGeoStr] = useState('');
 
-  // AbortController ref so user can click Stop (■) mid-stream
   const abortControllerRef = useRef(null);
-
-  // Smart Auto-Scroll Lock refs
   const mainScrollRef = useRef(null);
   const messagesEndRef = useRef(null);
   const userScrolledUpRef = useRef(false);
@@ -301,8 +296,16 @@ export default function App() {
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminError, setAdminError] = useState('');
   const [adminData, setAdminData] = useState(null);
+  const [adminTab, setAdminTab] = useState('analytics'); // 'analytics' | 'knowledge'
   const [adminSearch, setAdminSearch] = useState('');
   const [expandedSessionId, setExpandedSessionId] = useState(null);
+
+  // Live Knowledge Manager (Voice-to-Text -> Edit -> Save to Supabase)
+  const [noteCategory, setNoteCategory] = useState('Project / Update');
+  const [noteDraft, setNoteDraft] = useState('');
+  const [editingNoteId, setEditingNoteId] = useState(null);
+  const [isNoteListening, setIsNoteListening] = useState(false);
+  const [isSavingNote, setIsSavingNote] = useState(false);
 
   const isBusy = Boolean(isLoading || (streamingMsgId && streamingMsgId !== 'welcome-1'));
 
@@ -311,7 +314,6 @@ export default function App() {
     setTimeout(() => setToastText(''), 2500);
   };
 
-  // Smart Auto-Scroll: scrolls down automatically ONLY if user hasn't scrolled up to read history
   const handleFeedScroll = () => {
     const el = mainScrollRef.current;
     if (!el) return;
@@ -336,7 +338,7 @@ export default function App() {
         label,
         targetUrl
       })
-    }).catch((err) => console.warn('[Vikash AI Click Track Warning]:', err?.message));
+    }).catch(() => {});
   };
 
   const fetchLiveWelcome = async (targetId = 'welcome-1') => {
@@ -346,17 +348,13 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ isWelcomeGreeting: true, chatMode })
       });
-      if (!res.ok) {
-        const errBody = await res.text().catch(() => '');
-        throw new Error(`Welcome API HTTP ${res.status}: ${errBody.slice(0, 150)}`);
-      }
+      if (!res.ok) throw new Error(`Welcome HTTP ${res.status}`);
       const data = await res.json();
       const welcome = String(data?.welcome || FALLBACK_WELCOME).trim();
       setMessages((prev) =>
         prev.map((m) => (m.id === targetId ? { ...m, text: welcome, isStreaming: false } : m))
       );
-    } catch (err) {
-      console.error('[Vikash AI Welcome Error]:', err);
+    } catch {
       setMessages((prev) =>
         prev.map((m) => (m.id === targetId ? { ...m, text: FALLBACK_WELCOME, isStreaming: false } : m))
       );
@@ -411,9 +409,7 @@ export default function App() {
             }
           }
         }
-      } catch (err) {
-        console.warn('[Vikash AI History Restore Warning]:', err?.message);
-      }
+      } catch {}
       fetchLiveWelcome('welcome-1');
     };
     restoreOrGreet();
@@ -525,8 +521,7 @@ export default function App() {
       await navigator.clipboard.writeText(String(text || ''));
       setCopiedMsgId(msgId);
       setTimeout(() => setCopiedMsgId((cur) => (cur === msgId ? null : cur)), 2000);
-    } catch (err) {
-      console.error('[Vikash AI Clipboard Error]:', err);
+    } catch {
       showToast('कॉपी करने में समस्या आई');
     }
   };
@@ -548,21 +543,16 @@ export default function App() {
       const utter = new SpeechSynthesisUtterance(clean);
       utter.lang = 'hi-IN';
       utter.onend = () => setSpeakingMsgId(null);
-      utter.onerror = (e) => {
-        console.error('[Vikash AI TTS Error]:', e);
-        setSpeakingMsgId(null);
-      };
+      utter.onerror = () => setSpeakingMsgId(null);
       setSpeakingMsgId(msgId);
       window.speechSynthesis.speak(utter);
-    } catch (err) {
-      console.error('[Vikash AI Speak Exception]:', err);
+    } catch {
       setSpeakingMsgId(null);
     }
   };
 
   const sendMessage = async (textToSend, isRetry = false) => {
     const trimmed = String(textToSend || '').trim();
-    // Block sending while another response is still generating or streaming
     if (!trimmed || isBusy) return;
 
     userScrolledUpRef.current = false;
@@ -611,7 +601,6 @@ export default function App() {
       const contentType = res.headers.get('content-type') || '';
       if (contentType.includes('application/json')) {
         const jsonErr = await res.json();
-        console.error('[Vikash AI JSON Error Response]:', jsonErr);
         throw new Error(jsonErr?.error || jsonErr?.debugError || 'Server returned JSON error');
       }
 
@@ -663,9 +652,7 @@ export default function App() {
             } else if (evt.type === 'done') {
               donePayload = evt;
             }
-          } catch (parseErr) {
-            console.warn('[Vikash AI SSE Parse Warning]:', parseErr, raw);
-          }
+          } catch {}
         }
       }
 
@@ -754,7 +741,6 @@ export default function App() {
     }
   };
 
-  // Voice input populates the input box (and sends immediately ONLY if AI is not currently busy)
   const handleVoiceInput = () => {
     try {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -776,19 +762,14 @@ export default function App() {
           showToast('जवाब पूरा होते ही Send दबाएँ');
         }
       };
-      recognition.onerror = (e) => {
-        console.error('[Vikash AI Voice Recognition Error]:', e);
-        setIsListening(false);
-      };
+      recognition.onerror = () => setIsListening(false);
       recognition.onend = () => setIsListening(false);
       recognition.start();
-    } catch (err) {
-      console.error('[Vikash AI Voice Exception]:', err);
+    } catch {
       setIsListening(false);
     }
   };
 
-  // Secret 5-tap on Vikash AI logo
   const handleSecretLogoTap = () => {
     tapCountRef.current += 1;
     if (tapTimerRef.current) clearTimeout(tapTimerRef.current);
@@ -813,15 +794,13 @@ export default function App() {
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
-        console.error('[Vikash AI Admin Error]:', data);
         setAdminError(data.error || 'लॉगिन विफल रहा');
         setAdminAuthorized(false);
       } else {
         setAdminAuthorized(true);
         setAdminData(data);
       }
-    } catch (err) {
-      console.error('[Vikash AI Admin Network Error]:', err);
+    } catch {
       setAdminError('सर्वर से कनेक्ट नहीं हो सका');
     } finally {
       setAdminLoading(false);
@@ -846,9 +825,7 @@ export default function App() {
         if (expandedSessionId === targetSessionId) setExpandedSessionId(null);
         fetchAdminStats();
       }
-    } catch (err) {
-      console.error('[Vikash AI Delete Session Error]:', err);
-    }
+    } catch {}
   };
 
   const handleCopyTranscript = async (session, e) => {
@@ -858,6 +835,100 @@ export default function App() {
     );
     await handleCopyMessage(session.sessionId, lines.join('\n\n'));
     showToast('Chat transcript copied!');
+  };
+
+  // Voice-to-Text for Knowledge Box (Appends to textarea — NEVER auto-sends so you can fix typos first!)
+  const handleDictateNote = () => {
+    try {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        showToast('वॉइस टाइपिंग के लिए Chrome ब्राउज़र का उपयोग करें');
+        return;
+      }
+      const recognition = new SpeechRecognition();
+      recognition.lang = 'hi-IN';
+      recognition.interimResults = false;
+      setIsNoteListening(true);
+      recognition.onresult = (e) => {
+        const spoken = String(e.results[0][0].transcript || '').trim();
+        setIsNoteListening(false);
+        if (spoken) {
+          setNoteDraft((prev) => (prev.trim() ? `${prev.trim()} ${spoken}` : spoken));
+          showToast('टेक्स्ट बॉक्स में लिख दिया गया — अब चेक करके Save करें');
+        }
+      };
+      recognition.onerror = () => setIsNoteListening(false);
+      recognition.onend = () => setIsNoteListening(false);
+      recognition.start();
+    } catch {
+      setIsNoteListening(false);
+    }
+  };
+
+  const handleSaveNoteToSupabase = async (e) => {
+    e.preventDefault();
+    const cleaned = noteDraft.trim();
+    if (!cleaned || isSavingNote) return;
+
+    setIsSavingNote(true);
+    try {
+      const payload = editingNoteId
+        ? {
+            action: 'update_note',
+            password: adminPassword,
+            id: editingNoteId,
+            category: noteCategory,
+            noteText: cleaned
+          }
+        : {
+            action: 'save_note',
+            password: adminPassword,
+            category: noteCategory,
+            noteText: cleaned
+          };
+
+      const res = await fetch(ADMIN_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        showToast(data.error || 'सेव करने में समस्या आई');
+      } else {
+        showToast(editingNoteId ? 'नोट अपडेट हो गया!' : 'AI Memory में सेव हो गया!');
+        setNoteDraft('');
+        setEditingNoteId(null);
+        fetchAdminStats();
+      }
+    } catch {
+      showToast('नेटवर्क एरर आया');
+    } finally {
+      setIsSavingNote(false);
+    }
+  };
+
+  const handleDeleteNote = async (id) => {
+    try {
+      const res = await fetch(ADMIN_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'delete_note',
+          password: adminPassword,
+          id
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (editingNoteId === id) {
+          setEditingNoteId(null);
+          setNoteDraft('');
+        }
+        showToast('Note deleted');
+        fetchAdminStats();
+      }
+    } catch {}
   };
 
   const canSend = input.trim().length > 0 && !isBusy;
@@ -873,7 +944,7 @@ export default function App() {
   return (
     <div className="fixed inset-0 bg-white flex flex-col h-[100dvh] w-screen overflow-hidden text-neutral-900 font-sans">
       {toastText && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-50 bg-neutral-900 text-white text-xs px-4 py-2 rounded-full shadow-md font-medium">
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[60] bg-neutral-900 text-white text-xs px-4 py-2 rounded-full shadow-md font-medium">
           {toastText}
         </div>
       )}
@@ -1008,7 +1079,6 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* ICON-ONLY COPY & SPEAK/STOP BUTTONS */}
                   {!isMsgStreaming && String(msg.text || '').trim().length > 0 && (
                     <div className="flex items-center gap-2 pt-0.5">
                       <button
@@ -1059,7 +1129,6 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* IN-CHAT QUICK LEAD CARD (For hiring/project queries) */}
                   {!isMsgStreaming && msg.showLeadCard && (
                     <ConnectLeadCard
                       whatsappNumber={msg.whatsappNumber}
@@ -1068,7 +1137,6 @@ export default function App() {
                     />
                   )}
 
-                  {/* ACTION BUTTON CHIPS */}
                   {!isMsgStreaming && Array.isArray(msg.actionButtons) && msg.actionButtons.length > 0 && (
                     <div className="pt-1 flex flex-wrap items-center gap-2">
                       {msg.actionButtons.map((btn, bIdx) => (
@@ -1090,7 +1158,6 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* PROJECT CARDS (Auto-fetched from GitHub) */}
                   {!isMsgStreaming && Array.isArray(msg.recommendedProjects) && msg.recommendedProjects.length > 0 && (
                     <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {msg.recommendedProjects.map((proj) => (
@@ -1156,7 +1223,6 @@ export default function App() {
           );
         })}
 
-        {/* Normal-sized subtle 3 bouncing dots before first token arrives */}
         {isLoading && (
           <div className="w-full flex justify-start">
             <div className="flex items-center gap-1 py-2 px-1">
@@ -1177,21 +1243,6 @@ export default function App() {
 
       {/* 3. BOTTOM INPUT DOCK (Mic on LEFT, Input in CENTER, Send / Stop on RIGHT) */}
       <footer className="flex-none px-3 sm:px-4 pt-2 pb-4 bg-white max-w-3xl w-full mx-auto">
-        {/* Suggestion chips commented out as requested
-        <div className="flex items-center gap-2 overflow-x-auto pb-2.5 text-xs text-neutral-600" style={{ scrollbarWidth: 'none' }}>
-          {chips.map((chip, idx) => (
-            <button
-              key={idx}
-              type="button"
-              onClick={() => sendMessage(chip)}
-              className="px-2.5 py-1 rounded-full bg-transparent hover:text-neutral-950 text-neutral-600 whitespace-nowrap active:scale-95 transition-all font-medium"
-            >
-              {chip}
-            </button>
-          ))}
-        </div>
-        */}
-
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -1199,7 +1250,6 @@ export default function App() {
           }}
           className="flex items-center gap-1.5 bg-neutral-100 rounded-full p-1.5"
         >
-          {/* LEFT: Mic Button (Safe from Netlify badge on mobile/tablet) */}
           <button
             type="button"
             onClick={handleVoiceInput}
@@ -1219,7 +1269,6 @@ export default function App() {
             </svg>
           </button>
 
-          {/* CENTER: Always enabled so user can type or dictate next message while waiting */}
           <input
             type="text"
             value={input}
@@ -1235,7 +1284,6 @@ export default function App() {
             autoComplete="off"
           />
 
-          {/* RIGHT: Stop (■) button during streaming, otherwise Send button */}
           {isBusy ? (
             <button
               type="button"
@@ -1268,14 +1316,16 @@ export default function App() {
         </form>
       </footer>
 
-      {/* PRIVATE ADMIN MONITORING DASHBOARD (Unlocked via 5-tap on Logo or ?admin=true) */}
+      {/* PRIVATE ADMIN MONITORING DASHBOARD (Analytics + Voice/Edit Live Knowledge Manager) */}
       {showAdminModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-5">
           <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-neutral-200 max-h-[90dvh] flex flex-col overflow-hidden">
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-neutral-100">
               <div>
-                <h2 className="font-semibold text-neutral-900 text-sm">Vikash AI — Private Monitoring Dashboard</h2>
-                <p className="text-[11px] text-neutral-400">Click any visitor session to view full chat history</p>
+                <h2 className="font-semibold text-neutral-900 text-sm">Vikash AI — Private Admin Dashboard</h2>
+                <p className="text-[11px] text-neutral-400">
+                  {adminAuthorized ? 'Monitor visitor chats & teach Vikash AI live updates' : 'Password Protected'}
+                </p>
               </div>
               <button
                 type="button"
@@ -1285,6 +1335,34 @@ export default function App() {
                 &times;
               </button>
             </div>
+
+            {/* Tab Switcher when unlocked */}
+            {adminAuthorized && (
+              <div className="flex border-b border-neutral-100 px-5 pt-2 gap-2 bg-neutral-50/60">
+                <button
+                  type="button"
+                  onClick={() => setAdminTab('analytics')}
+                  className={`px-3.5 py-2 text-xs font-semibold border-b-2 transition-colors ${
+                    adminTab === 'analytics'
+                      ? 'border-neutral-900 text-neutral-900'
+                      : 'border-transparent text-neutral-500 hover:text-neutral-800'
+                  }`}
+                >
+                  📊 Visitor Chats & Analytics
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAdminTab('knowledge')}
+                  className={`px-3.5 py-2 text-xs font-semibold border-b-2 transition-colors ${
+                    adminTab === 'knowledge'
+                      ? 'border-neutral-900 text-neutral-900'
+                      : 'border-transparent text-neutral-500 hover:text-neutral-800'
+                  }`}
+                >
+                  🧠 My Knowledge ({(adminData?.customNotes || []).length})
+                </button>
+              </div>
+            )}
 
             <div className="flex-1 overflow-y-auto p-5 space-y-4">
               {!adminAuthorized ? (
@@ -1313,9 +1391,136 @@ export default function App() {
                     {adminLoading ? 'Checking...' : 'Unlock Dashboard'}
                   </button>
                 </form>
+              ) : adminTab === 'knowledge' ? (
+                /* ================= TAB 2: VOICE + MANUAL EDIT + SAVE TO SUPABASE ================= */
+                <div className="space-y-4">
+                  <form
+                    onSubmit={handleSaveNoteToSupabase}
+                    className="p-4 rounded-2xl bg-neutral-50 border border-neutral-200/80 space-y-3"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-neutral-900">
+                        {editingNoteId ? '✏️ Edit Saved Note' : '➕ Add New Info to Vikash AI (Supabase)'}
+                      </span>
+                      <select
+                        value={noteCategory}
+                        onChange={(e) => setNoteCategory(e.target.value)}
+                        className="px-2.5 py-1 rounded-lg bg-white border border-neutral-200 text-[11px] font-medium text-neutral-800 focus:outline-none"
+                      >
+                        <option value="Project / Update">Project / Update</option>
+                        <option value="Achievement / Award">Achievement / Award</option>
+                        <option value="Skill / Tech">Skill / Tech</option>
+                        <option value="Education / College">Education / College</option>
+                        <option value="Personal / Contact">Personal / Contact</option>
+                      </select>
+                    </div>
+
+                    <textarea
+                      rows={4}
+                      value={noteDraft}
+                      onChange={(e) => setNoteDraft(e.target.value)}
+                      placeholder={
+                        isNoteListening
+                          ? 'बोलिए... टेक्स्ट यहाँ दिखेगा, ऑटो-सेव नहीं होगा...'
+                          : 'यहाँ लिखें या नीचे "Speak" दबाकर बोलें — बोलने के बाद आप स्पेलिंग सुधार कर Save दबा सकते हैं...'
+                      }
+                      className="w-full p-3 rounded-xl bg-white border border-neutral-200 text-xs text-neutral-900 leading-relaxed focus:outline-none focus:border-neutral-400"
+                    />
+
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        type="button"
+                        onClick={handleDictateNote}
+                        className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all ${
+                          isNoteListening
+                            ? 'bg-red-600 text-white animate-pulse'
+                            : 'bg-white hover:bg-neutral-100 text-neutral-800 border border-neutral-200'
+                        }`}
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth="2"
+                            d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
+                          />
+                        </svg>
+                        <span>{isNoteListening ? 'Listening...' : 'Speak (Voice Type)'}</span>
+                      </button>
+
+                      <div className="flex items-center gap-2">
+                        {editingNoteId && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingNoteId(null);
+                              setNoteDraft('');
+                            }}
+                            className="px-3 py-2 rounded-xl bg-neutral-200 text-neutral-700 text-xs font-medium"
+                          >
+                            Cancel
+                          </button>
+                        )}
+                        <button
+                          type="submit"
+                          disabled={!noteDraft.trim() || isSavingNote}
+                          className="px-4 py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-semibold disabled:opacity-40 transition-colors"
+                        >
+                          {isSavingNote ? 'Saving...' : editingNoteId ? 'Update Note' : 'Save to AI Memory'}
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+
+                  {/* Saved Notes List */}
+                  <div className="space-y-2">
+                    <h3 className="text-xs font-semibold text-neutral-700">
+                      Saved Live Knowledge Notes ({(adminData?.customNotes || []).length})
+                    </h3>
+                    {(adminData?.customNotes || []).length === 0 ? (
+                      <p className="text-xs text-neutral-400 py-4 text-center">
+                        अभी कोई नया नोट सेव नहीं है। ऊपर बोलकर या लिखकर अपना पहला नोट जोड़ें!
+                      </p>
+                    ) : (
+                      (adminData?.customNotes || []).map((n) => (
+                        <div
+                          key={n.id}
+                          className="p-3 rounded-xl bg-neutral-50 border border-neutral-200/80 text-xs space-y-1.5"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="px-2 py-0.5 rounded-full bg-neutral-200/80 text-neutral-800 text-[10px] font-semibold">
+                              {n.category || 'General'}
+                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingNoteId(n.id);
+                                  setNoteCategory(n.category || 'Project / Update');
+                                  setNoteDraft(n.note_text || '');
+                                }}
+                                className="px-2 py-0.5 rounded bg-white border border-neutral-200 text-[10px] text-neutral-700 hover:bg-neutral-100"
+                              >
+                                Edit
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteNote(n.id)}
+                                className="px-2 py-0.5 rounded bg-white border border-red-200 text-[10px] text-red-600 hover:bg-red-50"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                          <p className="text-neutral-800 leading-relaxed whitespace-pre-wrap">{n.note_text}</p>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
               ) : (
+                /* ================= TAB 1: VISITOR ANALYTICS & CLICK-TO-EXPAND HISTORY ================= */
                 <>
-                  {/* Integration Status Pills */}
                   <div className="flex flex-wrap gap-2">
                     {Object.entries(adminData?.integrations || {}).map(([name, ok]) => (
                       <span
@@ -1331,7 +1536,6 @@ export default function App() {
                     ))}
                   </div>
 
-                  {/* KPI Row */}
                   <div className="grid grid-cols-3 gap-2.5">
                     <div className="p-3 rounded-xl bg-neutral-50 border border-neutral-200/70">
                       <div className="text-[11px] text-neutral-500">Visitors</div>
@@ -1347,7 +1551,6 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Top Asked Topics */}
                   {adminData?.stats?.topTopics?.length > 0 && (
                     <div className="space-y-1.5">
                       <h3 className="text-xs font-semibold text-neutral-700">Top Asked Topics</h3>
@@ -1361,7 +1564,6 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Top Clicked Projects & Links */}
                   {adminData?.stats?.topClicks?.length > 0 && (
                     <div className="space-y-1.5">
                       <h3 className="text-xs font-semibold text-neutral-700">Top Clicked Projects & Links</h3>
@@ -1375,10 +1577,11 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Search & Visitor Sessions with Click-to-Expand Full History */}
                   <div className="space-y-2.5">
                     <div className="flex items-center justify-between gap-2">
-                      <h3 className="text-xs font-semibold text-neutral-700">Visitor Sessions ({filteredAdminSessions.length})</h3>
+                      <h3 className="text-xs font-semibold text-neutral-700">
+                        Visitor Sessions ({filteredAdminSessions.length})
+                      </h3>
                       <button type="button" onClick={() => fetchAdminStats()} className="text-xs text-blue-600 font-medium">
                         Refresh
                       </button>
@@ -1446,7 +1649,6 @@ export default function App() {
                               </p>
                             )}
 
-                            {/* Expanded Full Conversation View */}
                             {isExpanded && (
                               <div
                                 onClick={(e) => e.stopPropagation()}
