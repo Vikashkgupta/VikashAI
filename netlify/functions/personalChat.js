@@ -16,6 +16,7 @@ const CORS_HEADERS = {
 let cachedWorkingModel = null;
 let cachedModels = null;
 let cachedModelsAt = 0;
+const quotaBlockedModels = new Set();
 
 let cachedGithub = null;
 let cachedGithubAt = 0;
@@ -82,30 +83,35 @@ function isSupportedTextModel(name) {
 
 function rankModel(name) {
   const n = String(name || '').toLowerCase();
-  if (n === 'gemini-flash-latest') return 100;
-  if (n.startsWith('gemini-3') && n.includes('flash') && !n.includes('lite') && !n.includes('preview')) return 96;
-  if (n.startsWith('gemini-3') && n.includes('flash-lite')) return 92;
-  if (n === 'gemini-flash-lite-latest') return 88;
-  if (n.startsWith('gemini-2.0-flash') && !n.includes('lite')) return 84;
-  if (n.startsWith('gemini-2.0-flash-lite')) return 80;
-  if (n.startsWith('gemini-3') && n.includes('flash')) return 75;
-  return 50;
+  if (quotaBlockedModels.has(name)) return -100;
+  if (n === 'gemini-flash-lite-latest') return 100;
+  if (n.startsWith('gemini-2.0-flash-lite')) return 96;
+  if (n.startsWith('gemini-2.0-flash') && !n.includes('lite')) return 92;
+  if (n.startsWith('gemini-3') && n.includes('flash-lite')) return 88;
+  if (n === 'gemini-flash-latest') return 84;
+  if (n.startsWith('gemini-3') && n.includes('flash')) return 60;
+  return 40;
 }
 
 function buildDiverseModelOrder(list) {
-  const base = cachedWorkingModel
-    ? [cachedWorkingModel, ...list.filter((m) => m !== cachedWorkingModel)]
-    : [...list];
+  const usable = list.filter((m) => !quotaBlockedModels.has(m));
+  const pool = usable.length > 0 ? usable : list;
+  const base =
+    cachedWorkingModel && !quotaBlockedModels.has(cachedWorkingModel)
+      ? [cachedWorkingModel, ...pool.filter((m) => m !== cachedWorkingModel)]
+      : [...pool];
 
   const distinct = [];
   const usedFamilies = new Set();
   for (const m of base) {
-    const family = m.includes('3.1-flash-lite')
-      ? '3.1-lite'
-      : m.includes('3-flash') || m.includes('3.5-flash') || m.includes('3.8-flash')
-      ? '3-flash'
+    const family = m.includes('2.0-flash-lite')
+      ? '2.0-lite'
       : m.includes('2.0-flash')
       ? '2.0-flash'
+      : m.includes('3.1-flash-lite')
+      ? '3.1-lite'
+      : m.includes('flash-lite-latest')
+      ? 'lite-latest'
       : m;
     if (!usedFamilies.has(family)) {
       usedFamilies.add(family);
@@ -153,11 +159,11 @@ async function discoverGeminiModels(apiKey) {
   }
 
   const fallbackList = [
-    'gemini-flash-latest',
-    'gemini-2.0-flash',
     'gemini-flash-lite-latest',
     'gemini-2.0-flash-lite',
-    'gemini-3.5-flash-lite'
+    'gemini-2.0-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-flash-latest'
   ];
   return buildDiverseModelOrder(fallbackList);
 }
@@ -732,8 +738,8 @@ export default async (req) => {
         let fullReply = '';
         let succeeded = false;
         const errors = [];
-
-        for (const model of models.slice(0, 3)) {
+        for (const model of models.slice(0, 6)) {
+          if (quotaBlockedModels.has(model)) continue;
           const attempts = useSearch ? [true, false] : [false];
           for (const withSearch of attempts) {
             try {
@@ -758,6 +764,9 @@ export default async (req) => {
 
               if (!gRes.ok || !gRes.body) {
                 const errTxt = await gRes.text().catch(() => '');
+                if (gRes.status === 429) {
+                  quotaBlockedModels.add(model);
+                }
                 errors.push(`${model}[search=${withSearch}](${gRes.status}): ${errTxt.slice(0, 100)}`);
                 if (cachedWorkingModel === model) cachedWorkingModel = null;
                 continue;
