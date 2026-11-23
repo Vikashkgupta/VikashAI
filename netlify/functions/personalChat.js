@@ -1,9 +1,10 @@
 // File: netlify/functions/personalChat.js
 // Vikash AI — Personal Assistant Backend (Netlify Functions 2.0 Web-Standard SSE)
 // Features:
-// - Laddu AI Engine: Dynamic Model Discovery (Cached 10 min) + Zero `thinkingConfig` Bug + Triple-Layer Rescue
+// - Laddu AI Engine: Dynamic Model Discovery (Cached 10 min) + Diversified Multi-Family Failover
 // - 0ms Intent-Based Smart Routing (only fetches GitHub, IG, Notes, or Search when needed)
-// - Date-Stamped Temporal Memory (`Saved on` date + `days ago` so past events are never confused with present)
+// - Compact Personal Prompt (60% lighter so personal queries stream fast and never cut off)
+// - Date-Stamped Temporal Memory (`Saved on` date + `days ago`)
 // - Zero Pre-Flight DB Blocking (instant stream start, saves turn to Supabase after completion)
 
 const CORS_HEADERS = {
@@ -74,7 +75,7 @@ function isSupportedTextModel(name) {
   const n = String(name || '').toLowerCase();
   if (notFoundModels.has(n) || quotaExhaustedModels.has(n)) return false;
   if (
-    /embedding|imagen|veo|aqa|tts|audio|robotics|learnlm|image|thinking|2\.0-|2\.5-pro|2\.5-flash|exp/i.test(n)
+    /embedding|imagen|veo|aqa|tts|audio|robotics|learnlm|image|thinking|omni|2\.0-|2\.5-pro|2\.5-flash|exp/i.test(n)
   ) {
     return false;
   }
@@ -84,35 +85,48 @@ function isSupportedTextModel(name) {
 function rankModel(name) {
   const n = String(name || '').toLowerCase();
   if (n.startsWith('gemini-3.5') && n.includes('flash-lite')) return 100;
-  if (n.startsWith('gemini-3') && n.includes('flash-lite')) return 96;
-  if (n.startsWith('gemini-3') && n.includes('flash') && !n.includes('preview')) return 92;
+  if (n === 'gemini-flash-latest') return 94;
+  if (n.startsWith('gemini-3') && n.includes('flash') && !n.includes('lite') && !n.includes('preview')) return 92;
   if (n === 'gemini-flash-lite-latest') return 88;
-  if (n === 'gemini-flash-latest') return 84;
+  if (n.startsWith('gemini-3') && n.includes('flash-lite') && !n.includes('preview')) return 85;
   if (n.startsWith('gemini-3') && n.includes('flash')) return 80;
-  if (n.includes('gemma-3-27b')) return 60;
-  if (n.includes('gemma-3-12b')) return 55;
+  if (n.includes('gemma-3-27b')) return 72;
+  if (n.includes('gemma-3-12b')) return 65;
   return 50;
+}
+
+// Ensures top-4 candidates are diversified across model families so a flash-lite 503 spike
+// immediately fails over to gemini-flash-latest or gemma-3 instead of retrying 4 flash-lites!
+function diversifyModelPool(list) {
+  const unique = [...new Set(list.filter(Boolean))];
+  const primaryLite = unique.find((m) => /flash-lite/i.test(m));
+  const primaryFlash = unique.find((m) => /flash/i.test(m) && !/lite/i.test(m));
+  const backupLite = unique.find((m) => /flash-lite/i.test(m) && m !== primaryLite);
+  const backupGemma = unique.find((m) => /gemma-3/i.test(m));
+
+  const ordered = [primaryLite, primaryFlash, backupLite, backupGemma, ...unique].filter(Boolean);
+  return [...new Set(ordered)];
 }
 
 function getDefaultCandidateModels() {
   const base = [
     'gemini-3.5-flash-lite',
-    'gemini-flash-lite-latest',
     'gemini-flash-latest',
-    'gemini-3.1-flash-lite-preview',
+    'gemini-flash-lite-latest',
+    'gemma-3-27b-it',
     'gemini-3-flash-preview',
-    'gemma-3-27b-it'
+    'gemini-3.1-flash-lite-preview'
   ].filter((m) => !quotaExhaustedModels.has(m) && !notFoundModels.has(m));
 
   const fallbackPool =
     base.length > 0
       ? base
-      : ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-3.1-flash-lite-preview'];
+      : ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemma-3-27b-it'];
 
   if (cachedWorkingModel && !quotaExhaustedModels.has(cachedWorkingModel) && !notFoundModels.has(cachedWorkingModel)) {
-    return [cachedWorkingModel, ...fallbackPool.filter((m) => m !== cachedWorkingModel)];
+    return diversifyModelPool([cachedWorkingModel, ...fallbackPool.filter((m) => m !== cachedWorkingModel)]);
   }
-  return fallbackPool;
+  return diversifyModelPool(fallbackPool);
 }
 
 async function getCandidateModels(apiKey) {
@@ -149,10 +163,12 @@ async function getCandidateModels(apiKey) {
       ? cachedDiscoveredModels.filter((m) => !quotaExhaustedModels.has(m) && !notFoundModels.has(m))
       : getDefaultCandidateModels();
 
+  const diversified = diversifyModelPool(pool.length > 0 ? pool : getDefaultCandidateModels());
+
   if (cachedWorkingModel && !quotaExhaustedModels.has(cachedWorkingModel) && !notFoundModels.has(cachedWorkingModel)) {
-    return [cachedWorkingModel, ...pool.filter((m) => m !== cachedWorkingModel)];
+    return [cachedWorkingModel, ...diversified.filter((m) => m !== cachedWorkingModel)];
   }
-  return pool.length > 0 ? pool : getDefaultCandidateModels();
+  return diversified;
 }
 
 function classifyUserIntent(message, chatMode = 'default') {
@@ -177,7 +193,7 @@ function classifyUserIntent(message, chatMode = 'default') {
 
   const needsSocialLinks =
     needsInstagramStats ||
-    /link|links|लिंक|social|facebook|fb|फेसबुक|twitter|x\.com|ट्विटर|discord|linkedin|linktree|whatsapp|व्हाट्सएप|contact|संपर्क|number|phone|मोबाइल|नंबर|email|mail|जुड़/i.test(
+    /link|links|लिंक|social|facebook|fb|फेसबुक|twitter|x\.com|ट्विटर|discord|linkedin|linedin|linktree|whatsapp|व्हाट्सएप|contact|संपर्क|number|phone|मोबाइल|नंबर|email|mail|जुड़/i.test(
       m
     );
 
@@ -190,7 +206,7 @@ function classifyUserIntent(message, chatMode = 'default') {
   const needsAboutBio =
     chatMode === 'recruiter' ||
     needsGitHub ||
-    /vikash|विकास|about|intro|parichay|परिचय|kaun|who|college|btech|aiml|diploma|study|पढ़ाई|education|aktu|unnao|mairwa|barabanki|siwan|training|award|softpro|makartaj|update|नया|exam|एग्जाम|abhi|kahan|कहां/i.test(
+    /vikash|विकास|about|intro|parichay|परिचय|kaun|who|college|btech|aiml|diploma|study|पढ़ाई|education|aktu|unnao|mairwa|barabanki|siwan|training|award|certificate|certificates|cert|linkedin|linedin|dob|birth|age|softpro|makartaj|update|नया|exam|एग्जाम|abhi|kahan|कहां/i.test(
       m
     );
 
@@ -279,23 +295,17 @@ async function fetchGitHubData() {
   }
 
   try {
-    const [profileRes, reposRes, readmeRes] = await Promise.all([
+    const [profileRes, reposRes] = await Promise.all([
       fetchWithTimeout(`https://api.github.com/users/${encodeURIComponent(username)}`, { headers }, 2500),
       fetchWithTimeout(
         `https://api.github.com/users/${encodeURIComponent(username)}/repos?sort=pushed&per_page=12`,
         { headers },
         2500
-      ),
-      fetchWithTimeout(
-        `https://raw.githubusercontent.com/${encodeURIComponent(username)}/${encodeURIComponent(username)}/main/README.md`,
-        {},
-        2000
-      ).catch(() => null)
+      )
     ]);
 
     const profile = profileRes.ok ? await profileRes.json() : null;
     const rawRepos = reposRes.ok ? await reposRes.json() : [];
-    const readmeText = readmeRes && readmeRes.ok ? (await readmeRes.text()).slice(0, 1200) : '';
 
     const repos = Array.isArray(rawRepos)
       ? rawRepos
@@ -321,8 +331,7 @@ async function fetchGitHubData() {
       publicRepos: profile?.public_repos ?? repos.length,
       htmlUrl: profile?.html_url || `https://github.com/${username}`,
       twitterUsername: profile?.twitter_username || '',
-      repos,
-      readmeSnippet: readmeText
+      repos
     };
     cachedGithubAt = now;
     return cachedGithub;
@@ -613,19 +622,28 @@ function buildModularSystemPrompt({
   if (intent.needsAboutBio && customKnowledge) {
     lines.push(`ABOUT VIKASH:\n${customKnowledge.aboutMe || ''}`);
     if (Array.isArray(customKnowledge.education)) {
-      lines.push(`EDUCATION:\n${JSON.stringify(customKnowledge.education)}`);
+      const compactEdu = customKnowledge.education
+        .map(
+          (e) =>
+            `- ${e.level}: ${e.course} @ ${e.institute} (${e.passingYear || e.duration || ''}${e.percentage ? `, ${e.percentage}` : ''})`
+        )
+        .join('\n');
+      lines.push(`EDUCATION:\n${compactEdu}`);
     }
     if (Array.isArray(customKnowledge.trainingsAndAwards)) {
-      lines.push(`TRAININGS & AWARDS:\n${JSON.stringify(customKnowledge.trainingsAndAwards)}`);
+      const compactTrainings = customKnowledge.trainingsAndAwards
+        .map(
+          (t) =>
+            `- ${t.title} @ ${t.organization} (${t.when || t.duration})${t.award ? ` — Award: ${t.award}` : ''}`
+        )
+        .join('\n');
+      lines.push(`TRAININGS, CERTIFICATES & AWARDS:\n${compactTrainings}`);
     }
     if (Array.isArray(customKnowledge.skills)) {
       lines.push(`SKILLS: ${customKnowledge.skills.join(', ')}`);
     }
     if (Array.isArray(customKnowledge.highlights)) {
       lines.push(`HIGHLIGHTS:\n- ${customKnowledge.highlights.join('\n- ')}`);
-    }
-    if (customKnowledge.extraNotes) {
-      lines.push(`NOTES: ${customKnowledge.extraNotes}`);
     }
   }
 
@@ -657,9 +675,6 @@ function buildModularSystemPrompt({
     lines.push(
       `LIVE GITHUB (${ghData?.name || 'Vikash'} | Repos: ${ghData?.publicRepos ?? 0} | Followers: ${ghData?.followers ?? 0}):\n${projectsSummary}`
     );
-    if (ghData?.readmeSnippet) {
-      lines.push(`GITHUB README:\n${ghData.readmeSnippet}`);
-    }
   }
 
   if (intent.needsInstagramStats) {
@@ -695,7 +710,9 @@ function buildModularSystemPrompt({
     lines.push(`VERIFIED LINKS (Only share URLs listed here):\n${availableLinks}`);
   }
 
-  lines.push(`Never invent fake URLs or fake stats.`);
+  lines.push(
+    `Keep answers concise, complete (never cut off mid-sentence), and under 140 words unless user asks for a detailed explanation. Never invent fake URLs or fake stats.`
+  );
   return lines.join('\n\n');
 }
 
@@ -709,7 +726,7 @@ function selectContextActionButtons(message, socialLinks) {
   if (/instagram|insta|इंस्टा|follower|post|like|comment/i.test(m) && socialLinks.instagram) {
     btns.push({ label: 'Instagram', href: socialLinks.instagram, type: 'INSTAGRAM' });
   }
-  if (/linkedin|लिंक्डइन|resume|cv|hire|intern/i.test(m) && socialLinks.linkedin) {
+  if (/linkedin|linedin|लिंक्डइन|resume|cv|hire|intern/i.test(m) && socialLinks.linkedin) {
     btns.push({ label: 'LinkedIn', href: socialLinks.linkedin, type: 'LINKEDIN' });
   }
   if (/facebook|fb|फेसबुक/i.test(m) && socialLinks.facebook) {
@@ -769,7 +786,8 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
   const failedThisTurn = new Set();
   const transient503Models = [];
 
-  for (const modelName of models.slice(0, 4)) {
+  for (let i = 0; i < Math.min(models.length, 4); i++) {
+    const modelName = models[i];
     const isGemma = modelName.toLowerCase().includes('gemma');
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse`;
     const attempts = useSearch && !isGemma ? [true, false] : [false];
@@ -796,6 +814,8 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
         payload.tools = [{ google_search: {} }];
       }
 
+      const timeoutMs = withSearch ? 11000 : i === 0 ? 9500 : 5500;
+
       try {
         const res = await fetchWithTimeout(
           endpoint,
@@ -807,7 +827,7 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
             },
             body: JSON.stringify(payload)
           },
-          withSearch ? 11000 : 6500
+          timeoutMs
         );
 
         if (res.ok && res.body) {
@@ -1045,6 +1065,7 @@ export default async (req) => {
       clientDevice: body.clientDevice,
       ist
     });
+
     const historyLimit = intent.isGreetingOrShort ? 4 : 6;
     const contents = buildValidGeminiContents(
       Array.isArray(body.history) ? body.history.slice(-historyLimit) : [],
@@ -1071,13 +1092,12 @@ export default async (req) => {
     const sseResult = await openGeminiSSEStream(apiKey, systemInstruction, contents, intent.needsGoogleSearch);
 
     if (!sseResult.ok) {
-      // If models failed only due to transient 503 high demand, pause 750ms and retry them in rescue!
       if (Array.isArray(sseResult.transient503Models) && sseResult.transient503Models.length > 0) {
         await new Promise((r) => setTimeout(r, 750));
       }
 
       const rescue = await callGeminiBufferedRescue(apiKey, systemInstruction, contents, sseResult.failedThisTurn);
-      const gracefulText = !rescue.ok ? buildGracefulOfflineReply(userMessage, body.customKnowledge) : '';
+      const gracefulText = !rescue.ok ? buildGracefulOfflineReply(userMessage) : '';
       const finalRescueText = rescue.ok && rescue.text ? rescue.text : gracefulText;
 
       if (finalRescueText) {
