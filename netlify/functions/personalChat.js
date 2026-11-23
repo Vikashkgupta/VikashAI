@@ -315,7 +315,9 @@ function getSocialLinks(ghData, igData) {
 async function supabaseRequest(path, options = {}) {
   const url = String(process.env.SUPABASE_URL || '').trim();
   const key = String(process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
-  if (!url || !key) return null;
+  if (!url || !key) {
+    return { ok: false, error: 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing in Netlify env' };
+  }
 
   const authHeaders = {
     apikey: key,
@@ -333,18 +335,58 @@ async function supabaseRequest(path, options = {}) {
         ...options,
         headers: authHeaders
       },
-      2500
+      3000
     );
+    const text = await res.text().catch(() => '');
     if (!res.ok) {
-      const errTxt = await res.text().catch(() => '');
-      console.error(`[personalChat] Supabase HTTP ${res.status}:`, errTxt.slice(0, 180));
-      return null;
+      console.error(`[personalChat] Supabase HTTP ${res.status}:`, text.slice(0, 200));
+      return { ok: false, status: res.status, error: `HTTP ${res.status}: ${text.slice(0, 180)}` };
     }
-    const text = await res.text();
-    return text ? JSON.parse(text) : null;
+    return { ok: true, data: text ? JSON.parse(text) : null };
   } catch (err) {
     console.error('[personalChat] Supabase network error:', err?.message);
-    return null;
+    return { ok: false, error: err?.message || 'Network timeout' };
+  }
+}
+
+async function saveChatTurnToSupabase({ sessionId, visitorName, deviceInfo, city, userMsg, botReply }) {
+  if (!sessionId) return { logged: false, reason: 'Missing sessionId' };
+  try {
+    const existingRes = await supabaseRequest(
+      `personal_chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=conversation,message_count`
+    );
+    if (!existingRes?.ok) {
+      return { logged: false, reason: existingRes?.error || 'Failed to read existing session' };
+    }
+    const existing = existingRes.data;
+    const prevConv = Array.isArray(existing?.[0]?.conversation) ? existing[0].conversation : [];
+    const nowIso = new Date().toISOString();
+    const updatedConv = [
+      ...prevConv,
+      { role: 'user', text: userMsg, ts: nowIso },
+      { role: 'model', text: botReply, ts: nowIso }
+    ].slice(-40);
+
+    const writeRes = await supabaseRequest('personal_chat_sessions?on_conflict=session_id', {
+      method: 'POST',
+      headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+      body: JSON.stringify({
+        session_id: sessionId,
+        visitor_name: visitorName || 'Visitor',
+        device_info: deviceInfo || '',
+        city: city || '',
+        message_count: (existing?.[0]?.message_count || 0) + 1,
+        conversation: updatedConv,
+        last_active: nowIso
+      })
+    });
+    if (!writeRes?.ok) {
+      return { logged: false, reason: writeRes?.error || 'Failed to insert/upsert row' };
+    }
+    return { logged: true };
+  } catch (err) {
+    console.warn('[personalChat] Supabase save skipped:', err?.message);
+    return { logged: false, reason: err?.message };
   }
 }
 
@@ -554,12 +596,12 @@ export default async (req) => {
       const sessionId = url.searchParams.get('sessionId');
       if (!sessionId) return jsonResponse(400, { success: false, error: 'Missing sessionId' });
 
-      const rows = await supabaseRequest(
+      const rowsRes = await supabaseRequest(
         `personal_chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=conversation,visitor_name`
       );
       return jsonResponse(200, {
         success: true,
-        session: rows?.[0] || null
+        session: rowsRes?.data?.[0] || null
       });
     }
 
@@ -786,8 +828,7 @@ export default async (req) => {
           controller.close();
           return;
         }
-
-        await saveChatTurnToSupabase({
+        const supabaseStatus = await saveChatTurnToSupabase({
           sessionId: body.sessionId,
           visitorName: body.visitorName || 'Visitor',
           deviceInfo: body.clientDevice?.platform || '',
@@ -800,6 +841,7 @@ export default async (req) => {
           type: 'done',
           isError: false,
           reply: fullReply,
+          supabaseStatus,
           recommendedProjects,
           actionButtons,
           quickFollowUps
