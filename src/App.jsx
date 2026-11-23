@@ -1,6 +1,15 @@
 // File: src/App.jsx
 // Vikash AI — Personal Assistant (React + Tailwind CSS + Netlify Functions)
-// Includes full structured error handling (`console.error` diagnostics) and clean monochrome UI.
+// Features:
+// - Mic button on the LEFT side of input bar (never blocked by Netlify badge on phone/tablet)
+// - Send locked while streaming + Stop (■) button to abort response mid-stream
+// - Subtle normal-sized 3 bouncing dots (`w-1.5 h-1.5`)
+// - Top-right 3-dots button cleanly commented out for future buttons
+// - Smart Auto-Scroll lock (stops pulling down if user scrolls up to read earlier messages)
+// - Recruiter Mode (`?mode=recruiter`) & In-Chat "Connect with Vikash" Quick Lead Card
+// - Full Admin Monitoring Dashboard: Search bar, Active Now dot, Top Asked Topics,
+//   Click-to-Expand Full Conversation History, Copy Transcript & Delete Session
+
 import React, { useState, useEffect, useRef } from 'react';
 import { VIKASH_CUSTOM_KNOWLEDGE } from './data/customKnowledge';
 
@@ -37,32 +46,60 @@ function getOrCreateSessionId() {
   }
 }
 
+function getDetectedChatMode() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('mode') === 'recruiter' ? 'recruiter' : 'default';
+  } catch {
+    return 'default';
+  }
+}
+
 function ActionChipIcon({ type }) {
   const t = String(type || '').toUpperCase();
   if (t === 'GITHUB') {
     return (
       <svg className="w-3.5 h-3.5 text-neutral-800 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24">
-        <path fillRule="evenodd" clipRule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" />
+        <path
+          fillRule="evenodd"
+          clipRule="evenodd"
+          d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
+        />
       </svg>
     );
   }
   if (t === 'WHATSAPP') {
     return (
       <svg className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.9"
+          d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"
+        />
       </svg>
     );
   }
   if (t === 'CALL') {
     return (
       <svg className="w-3.5 h-3.5 text-neutral-700 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+        <path
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeWidth="1.9"
+          d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z"
+        />
       </svg>
     );
   }
   return (
     <svg className="w-3.5 h-3.5 text-neutral-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        strokeWidth="1.9"
+        d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
+      />
     </svg>
   );
 }
@@ -78,7 +115,6 @@ function renderInlineMarkdown(rawText) {
     }
   );
 
-  // Strip accidental spaces inside URLs (e.g., `https://instagram.com/ vikash`)
   const cleanedUrlText = withMd.replace(/(https?:\/\/[^\s<>"')\]]+)\s+([a-zA-Z0-9_.-]+)/g, '$1$2');
 
   const withBare = cleanedUrlText.replace(/(https?:\/\/[^\s<>"')\]]+)/g, (url) => {
@@ -144,8 +180,79 @@ function FormattedMessage({ text }) {
   );
 }
 
+// In-Chat Quick Lead Card when visitor asks about hiring, internship, or freelance project
+function ConnectLeadCard({ whatsappNumber = '919931890824', defaultName = '', onSubmitted }) {
+  const [leadName, setLeadName] = useState(defaultName !== 'Visitor' ? defaultName : '');
+  const [leadPurpose, setLeadPurpose] = useState('Internship / Job');
+  const [leadNote, setLeadNote] = useState('');
+
+  const handleSendLead = (e) => {
+    e.preventDefault();
+    const cleanNum = String(whatsappNumber || '919931890824').replace(/[^\d]/g, '');
+    const msg = `Namaste Vikash! Main ${leadName || 'Visitor'} bol raha hoon.\nPurpose: ${leadPurpose}${
+      leadNote.trim() ? `\nDetails: ${leadNote.trim()}` : ''
+    }`;
+    const url = `https://wa.me/${cleanNum}?text=${encodeURIComponent(msg)}`;
+    if (onSubmitted) onSubmitted(url, leadPurpose);
+    window.open(url, '_blank', 'noopener,noreferrer');
+  };
+
+  return (
+    <form
+      onSubmit={handleSendLead}
+      className="mt-2.5 p-3.5 rounded-2xl bg-neutral-50 border border-neutral-200/90 space-y-2.5 max-w-sm"
+    >
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-neutral-900">Connect Directly with Vikash</span>
+        <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-medium">
+          Instant WhatsApp
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <input
+          type="text"
+          value={leadName}
+          onChange={(e) => setLeadName(e.target.value)}
+          placeholder="आपका नाम"
+          className="px-2.5 py-1.5 rounded-lg bg-white border border-neutral-200 text-xs text-neutral-900 focus:outline-none"
+        />
+        <select
+          value={leadPurpose}
+          onChange={(e) => setLeadPurpose(e.target.value)}
+          className="px-2 py-1.5 rounded-lg bg-white border border-neutral-200 text-xs text-neutral-900 focus:outline-none"
+        >
+          <option value="Internship / Job">Internship / Job</option>
+          <option value="Website / App Project">Website / App</option>
+          <option value="Collaboration">Collaboration</option>
+        </select>
+      </div>
+      <input
+        type="text"
+        value={leadNote}
+        onChange={(e) => setLeadNote(e.target.value)}
+        placeholder="छोटा संदेश (जैसे: React project या role details)"
+        className="w-full px-2.5 py-1.5 rounded-lg bg-white border border-neutral-200 text-xs text-neutral-900 focus:outline-none"
+      />
+      <button
+        type="submit"
+        className="w-full py-2 rounded-xl bg-neutral-900 hover:bg-neutral-800 text-white text-xs font-medium transition-colors"
+      >
+        Send on WhatsApp ↗
+      </button>
+    </form>
+  );
+}
+
 export default function App() {
   const [sessionId] = useState(() => getOrCreateSessionId());
+  const [chatMode] = useState(() => getDetectedChatMode());
+  const [visitorName, setVisitorName] = useState(() => {
+    try {
+      return localStorage.getItem('vikash_ai_visitor_name') || 'Visitor';
+    } catch {
+      return 'Visitor';
+    }
+  });
   const [avatarError, setAvatarError] = useState(false);
   const [messages, setMessages] = useState([
     {
@@ -154,6 +261,8 @@ export default function App() {
       text: '',
       recommendedProjects: [],
       actionButtons: [],
+      showLeadCard: false,
+      whatsappNumber: '919931890824',
       isError: false,
       retryPrompt: '',
       isStreaming: true
@@ -167,8 +276,15 @@ export default function App() {
   const [speakingMsgId, setSpeakingMsgId] = useState(null);
   const [copiedMsgId, setCopiedMsgId] = useState(null);
   const [toastText, setToastText] = useState('');
-  const [showOptions, setShowOptions] = useState(false);
   const [cachedGeoStr, setCachedGeoStr] = useState('');
+
+  // AbortController ref so user can click Stop (■) mid-stream
+  const abortControllerRef = useRef(null);
+
+  // Smart Auto-Scroll Lock refs
+  const mainScrollRef = useRef(null);
+  const messagesEndRef = useRef(null);
+  const userScrolledUpRef = useRef(false);
 
   // Secret 5-tap Admin Monitoring Dashboard state
   const tapCountRef = useRef(0);
@@ -185,16 +301,28 @@ export default function App() {
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminError, setAdminError] = useState('');
   const [adminData, setAdminData] = useState(null);
+  const [adminSearch, setAdminSearch] = useState('');
+  const [expandedSessionId, setExpandedSessionId] = useState(null);
 
-  const messagesEndRef = useRef(null);
+  const isBusy = Boolean(isLoading || (streamingMsgId && streamingMsgId !== 'welcome-1'));
 
   const showToast = (msg) => {
     setToastText(msg);
     setTimeout(() => setToastText(''), 2500);
   };
 
+  // Smart Auto-Scroll: scrolls down automatically ONLY if user hasn't scrolled up to read history
+  const handleFeedScroll = () => {
+    const el = mainScrollRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    userScrolledUpRef.current = distanceFromBottom > 90;
+  };
+
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (!userScrolledUpRef.current) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
   }, [messages, isLoading]);
 
   const trackClick = (eventType, label, targetUrl) => {
@@ -216,16 +344,13 @@ export default function App() {
       const res = await fetch(CHAT_API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ isWelcomeGreeting: true })
+        body: JSON.stringify({ isWelcomeGreeting: true, chatMode })
       });
       if (!res.ok) {
         const errBody = await res.text().catch(() => '');
         throw new Error(`Welcome API HTTP ${res.status}: ${errBody.slice(0, 150)}`);
       }
       const data = await res.json();
-      if (data?.debugError) {
-        console.warn('[Vikash AI Welcome Diagnostic]:', data.debugError);
-      }
       const welcome = String(data?.welcome || FALLBACK_WELCOME).trim();
       setMessages((prev) =>
         prev.map((m) => (m.id === targetId ? { ...m, text: welcome, isStreaming: false } : m))
@@ -248,6 +373,9 @@ export default function App() {
         const res = await fetch(`${CHAT_API}?sessionId=${encodeURIComponent(sessionId)}`);
         if (res.ok) {
           const data = await res.json();
+          if (data?.session?.visitor_name && data.session.visitor_name !== 'Visitor') {
+            setVisitorName(data.session.visitor_name);
+          }
           const conv = data?.session?.conversation;
           if (Array.isArray(conv) && conv.length > 0) {
             const validTurns = clearedAtMs
@@ -261,6 +389,7 @@ export default function App() {
                   text: FALLBACK_WELCOME,
                   recommendedProjects: [],
                   actionButtons: [],
+                  showLeadCard: false,
                   isError: false,
                   retryPrompt: '',
                   isStreaming: false
@@ -271,6 +400,7 @@ export default function App() {
                   text: t.text || '',
                   recommendedProjects: [],
                   actionButtons: [],
+                  showLeadCard: false,
                   isError: false,
                   retryPrompt: '',
                   isStreaming: false
@@ -304,16 +434,11 @@ export default function App() {
               const parts = [a.suburb || a.village || a.town || a.city, a.state].filter(Boolean);
               if (parts.length > 0) label = parts.join(', ');
             }
-          } catch (geoErr) {
-            console.warn('[Vikash AI Reverse Geocode Warning]:', geoErr?.message);
-          }
+          } catch {}
           setCachedGeoStr(label);
           if (forcePrompt) showToast('GPS लोकेशन अपडेट हो गई');
         },
-        (err) => {
-          console.warn('[Vikash AI GPS Warning]:', err?.message);
-          if (forcePrompt) showToast('लोकेशन की अनुमति नहीं मिली');
-        },
+        () => {},
         { timeout: 6000 }
       );
     };
@@ -357,10 +482,24 @@ export default function App() {
     };
   };
 
+  const handleStopGenerating = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsLoading(false);
+    setMessages((prev) =>
+      prev.map((m) => (m.id === streamingMsgId ? { ...m, isStreaming: false } : m))
+    );
+    setStreamingMsgId(null);
+  };
+
   const handleClearChat = () => {
+    handleStopGenerating();
     try {
       localStorage.setItem('vk_chat_cleared_at', new Date().toISOString());
     } catch {}
+    userScrolledUpRef.current = false;
     const id = 'welcome-' + Date.now();
     setStreamingMsgId(id);
     setMessages([
@@ -370,6 +509,7 @@ export default function App() {
         text: '',
         recommendedProjects: [],
         actionButtons: [],
+        showLeadCard: false,
         isError: false,
         retryPrompt: '',
         isStreaming: true
@@ -422,7 +562,10 @@ export default function App() {
 
   const sendMessage = async (textToSend, isRetry = false) => {
     const trimmed = String(textToSend || '').trim();
-    if (!trimmed || isLoading) return;
+    // Block sending while another response is still generating or streaming
+    if (!trimmed || isBusy) return;
+
+    userScrolledUpRef.current = false;
 
     if (!isRetry) {
       setMessages((prev) => [...prev, { id: 'u-' + Date.now(), sender: 'user', text: trimmed }]);
@@ -434,6 +577,7 @@ export default function App() {
     setIsLoading(true);
     const botMsgId = 'b-' + Date.now();
     const controller = new AbortController();
+    abortControllerRef.current = controller;
     const timeoutId = setTimeout(() => controller.abort(), 35000);
 
     try {
@@ -449,6 +593,8 @@ export default function App() {
         signal: controller.signal,
         body: JSON.stringify({
           sessionId,
+          visitorName,
+          chatMode,
           message: trimmed,
           history: historyPayload,
           clientDevice,
@@ -483,6 +629,8 @@ export default function App() {
           text: '',
           recommendedProjects: [],
           actionButtons: [],
+          showLeadCard: false,
+          whatsappNumber: '919931890824',
           isError: false,
           retryPrompt: '',
           isStreaming: true
@@ -521,7 +669,15 @@ export default function App() {
         }
       }
 
+      abortControllerRef.current = null;
       setStreamingMsgId(null);
+
+      if (donePayload?.detectedVisitorName && donePayload.detectedVisitorName !== 'Visitor') {
+        setVisitorName(donePayload.detectedVisitorName);
+        try {
+          localStorage.setItem('vikash_ai_visitor_name', donePayload.detectedVisitorName);
+        } catch {}
+      }
 
       if (donePayload?.debugError) {
         console.error('[Vikash AI Backend Diagnostic]:', donePayload.debugError);
@@ -550,8 +706,12 @@ export default function App() {
               ? {
                   ...m,
                   text: donePayload?.reply || fullText,
-                  recommendedProjects: Array.isArray(donePayload?.recommendedProjects) ? donePayload.recommendedProjects : [],
+                  recommendedProjects: Array.isArray(donePayload?.recommendedProjects)
+                    ? donePayload.recommendedProjects
+                    : [],
                   actionButtons: Array.isArray(donePayload?.actionButtons) ? donePayload.actionButtons : [],
+                  showLeadCard: Boolean(donePayload?.showLeadCard),
+                  whatsappNumber: donePayload?.whatsappNumber || '919931890824',
                   isStreaming: false
                 }
               : m
@@ -563,9 +723,18 @@ export default function App() {
       }
     } catch (err) {
       clearTimeout(timeoutId);
-      console.error('[Vikash AI Request Exception]:', err);
+      abortControllerRef.current = null;
       setIsLoading(false);
       setStreamingMsgId(null);
+
+      if (err?.name === 'AbortError') {
+        setMessages((prev) =>
+          prev.map((m) => (m.id === botMsgId ? { ...m, isStreaming: false } : m))
+        );
+        return;
+      }
+
+      console.error('[Vikash AI Request Exception]:', err);
       setMessages((prev) => [
         ...prev,
         {
@@ -574,6 +743,7 @@ export default function App() {
           text: 'Something went wrong, please try again.',
           recommendedProjects: [],
           actionButtons: [],
+          showLeadCard: false,
           isError: true,
           retryPrompt: trimmed,
           isStreaming: false
@@ -584,6 +754,7 @@ export default function App() {
     }
   };
 
+  // Voice input populates the input box (and sends immediately ONLY if AI is not currently busy)
   const handleVoiceInput = () => {
     try {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -599,7 +770,11 @@ export default function App() {
         const spoken = e.results[0][0].transcript;
         setIsListening(false);
         setInput(spoken);
-        sendMessage(spoken);
+        if (!isBusy) {
+          sendMessage(spoken);
+        } else {
+          showToast('जवाब पूरा होते ही Send दबाएँ');
+        }
       };
       recognition.onerror = (e) => {
         console.error('[Vikash AI Voice Recognition Error]:', e);
@@ -653,7 +828,47 @@ export default function App() {
     }
   };
 
-  const canSend = input.trim().length > 0 && !isLoading;
+  const handleDeleteSession = async (targetSessionId, e) => {
+    e.stopPropagation();
+    try {
+      const res = await fetch(ADMIN_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'delete_session',
+          password: adminPassword,
+          sessionId: targetSessionId
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast('Session deleted');
+        if (expandedSessionId === targetSessionId) setExpandedSessionId(null);
+        fetchAdminStats();
+      }
+    } catch (err) {
+      console.error('[Vikash AI Delete Session Error]:', err);
+    }
+  };
+
+  const handleCopyTranscript = async (session, e) => {
+    e.stopPropagation();
+    const lines = (session.conversation || []).map(
+      (t) => `${t.role === 'user' ? session.visitorName || 'Visitor' : 'Vikash AI'}: ${t.text}`
+    );
+    await handleCopyMessage(session.sessionId, lines.join('\n\n'));
+    showToast('Chat transcript copied!');
+  };
+
+  const canSend = input.trim().length > 0 && !isBusy;
+
+  const filteredAdminSessions = (adminData?.recentSessions || []).filter((s) => {
+    const q = adminSearch.trim().toLowerCase();
+    if (!q) return true;
+    const inMeta = `${s.sessionId} ${s.visitorName} ${s.deviceInfo} ${s.city}`.toLowerCase().includes(q);
+    const inMsgs = (s.conversation || []).some((m) => String(m.text || '').toLowerCase().includes(q));
+    return inMeta || inMsgs;
+  });
 
   return (
     <div className="fixed inset-0 bg-white flex flex-col h-[100dvh] w-screen overflow-hidden text-neutral-900 font-sans">
@@ -683,7 +898,14 @@ export default function App() {
             )}
           </div>
           <div className="min-w-0">
-            <h1 className="text-[15px] font-semibold text-neutral-900 leading-tight truncate">Vikash AI</h1>
+            <div className="flex items-center gap-1.5">
+              <h1 className="text-[15px] font-semibold text-neutral-900 leading-tight truncate">Vikash AI</h1>
+              {chatMode === 'recruiter' && (
+                <span className="px-2 py-0.5 rounded-full bg-neutral-900 text-white text-[10px] font-medium">
+                  Portfolio
+                </span>
+              )}
+            </div>
             <p className="text-[11px] text-neutral-400 truncate">Personal Assistant</p>
           </div>
         </div>
@@ -696,12 +918,19 @@ export default function App() {
             title="नया चैट"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.8"
+                d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"
+              />
             </svg>
           </button>
+
+          {/* Top-right 3-dots menu commented out as requested (will add custom buttons later)
           <button
             type="button"
-            onClick={() => setShowOptions(true)}
+            onClick={() => {}}
             className="w-9 h-9 rounded-full flex items-center justify-center text-neutral-600 hover:bg-neutral-100 active:bg-neutral-200 transition-colors"
             title="विकल्प"
           >
@@ -709,11 +938,17 @@ export default function App() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
             </svg>
           </button>
+          */}
         </div>
       </header>
 
       {/* 2. CHAT FEED */}
-      <main className="flex-1 overflow-y-auto px-4 py-5 space-y-6 max-w-3xl w-full mx-auto" style={{ scrollbarWidth: 'none' }}>
+      <main
+        ref={mainScrollRef}
+        onScroll={handleFeedScroll}
+        className="flex-1 overflow-y-auto px-4 py-5 space-y-6 max-w-3xl w-full mx-auto"
+        style={{ scrollbarWidth: 'none' }}
+      >
         {messages.map((msg) => {
           const isMsgStreaming = Boolean(msg.isStreaming || streamingMsgId === msg.id);
           return (
@@ -726,7 +961,12 @@ export default function App() {
                 <div className="max-w-[92%] sm:max-w-[80%] rounded-2xl border border-red-200 bg-red-50/60 px-4 py-3.5 text-sm text-neutral-800 space-y-2.5">
                   <div className="flex items-start gap-2.5">
                     <svg className="w-4 h-4 text-red-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="2"
+                        d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                      />
                     </svg>
                     <div className="text-[13.5px] leading-relaxed">
                       <span className="font-semibold text-neutral-900">Something went wrong, please try again.</span>
@@ -739,7 +979,12 @@ export default function App() {
                       className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-white hover:bg-neutral-50 text-neutral-800 border border-neutral-200 text-xs font-medium active:scale-95 transition-all"
                     >
                       <svg className="w-3.5 h-3.5 text-neutral-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="2"
+                          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                        />
                       </svg>
                       <span>Try again</span>
                     </button>
@@ -750,14 +995,20 @@ export default function App() {
                   {msg.text ? (
                     <FormattedMessage text={msg.text} />
                   ) : (
-                    <div className="flex items-center gap-1.5 py-2 px-1">
-                      <span className="w-2 h-2 rounded-full bg-neutral-400 animate-bounce" />
-                      <span className="w-2 h-2 rounded-full bg-neutral-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
-                      <span className="w-2 h-2 rounded-full bg-neutral-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
+                    <div className="flex items-center gap-1 py-2 px-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-neutral-400 animate-bounce" />
+                      <span
+                        className="w-1.5 h-1.5 rounded-full bg-neutral-400 animate-bounce"
+                        style={{ animationDelay: '0.15s' }}
+                      />
+                      <span
+                        className="w-1.5 h-1.5 rounded-full bg-neutral-400 animate-bounce"
+                        style={{ animationDelay: '0.3s' }}
+                      />
                     </div>
                   )}
 
-                  {/* ICON-ONLY COPY & SPEAK/STOP BUTTONS (NO TEXT LABELS) */}
+                  {/* ICON-ONLY COPY & SPEAK/STOP BUTTONS */}
                   {!isMsgStreaming && String(msg.text || '').trim().length > 0 && (
                     <div className="flex items-center gap-2 pt-0.5">
                       <button
@@ -772,7 +1023,12 @@ export default function App() {
                           </svg>
                         ) : (
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth="1.9"
+                              d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"
+                            />
                           </svg>
                         )}
                       </button>
@@ -791,11 +1047,25 @@ export default function App() {
                           </svg>
                         ) : (
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.9" d="M11 5L6 9H2v6h4l5 4V5zM15.54 8.46a5 5 0 010 7.07M19.07 4.93a10 10 0 010 14.14" />
+                            <path
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                              strokeWidth="1.9"
+                              d="M11 5L6 9H2v6h4l5 4V5zM15.54 8.46a5 5 0 010 7.07M19.07 4.93a10 10 0 010 14.14"
+                            />
                           </svg>
                         )}
                       </button>
                     </div>
+                  )}
+
+                  {/* IN-CHAT QUICK LEAD CARD (For hiring/project queries) */}
+                  {!isMsgStreaming && msg.showLeadCard && (
+                    <ConnectLeadCard
+                      whatsappNumber={msg.whatsappNumber}
+                      defaultName={visitorName}
+                      onSubmitted={(url, purpose) => trackClick('lead_whatsapp', `Lead: ${purpose}`, url)}
+                    />
                   )}
 
                   {/* ACTION BUTTON CHIPS */}
@@ -886,20 +1156,27 @@ export default function App() {
           );
         })}
 
+        {/* Normal-sized subtle 3 bouncing dots before first token arrives */}
         {isLoading && (
           <div className="w-full flex justify-start">
-            <div className="flex items-center gap-1.5 py-2 px-1">
-              <span className="w-2 h-2 rounded-full bg-neutral-400 animate-bounce" />
-              <span className="w-2 h-2 rounded-full bg-neutral-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
-              <span className="w-2 h-2 rounded-full bg-neutral-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
+            <div className="flex items-center gap-1 py-2 px-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-neutral-400 animate-bounce" />
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-neutral-400 animate-bounce"
+                style={{ animationDelay: '0.15s' }}
+              />
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-neutral-400 animate-bounce"
+                style={{ animationDelay: '0.3s' }}
+              />
             </div>
           </div>
         )}
         <div ref={messagesEndRef} />
       </main>
 
-      {/* 3. BOTTOM INPUT DOCK */}
-      <footer className="flex-none px-3 sm:px-4 py-3 bg-white max-w-3xl w-full mx-auto">
+      {/* 3. BOTTOM INPUT DOCK (Mic on LEFT, Input in CENTER, Send / Stop on RIGHT) */}
+      <footer className="flex-none px-3 sm:px-4 pt-2 pb-4 bg-white max-w-3xl w-full mx-auto">
         {/* Suggestion chips commented out as requested
         <div className="flex items-center gap-2 overflow-x-auto pb-2.5 text-xs text-neutral-600" style={{ scrollbarWidth: 'none' }}>
           {chips.map((chip, idx) => (
@@ -920,79 +1197,76 @@ export default function App() {
             e.preventDefault();
             if (canSend) sendMessage(input);
           }}
-          className="flex items-center bg-neutral-100 rounded-full pl-4 pr-1.5 py-1.5"
+          className="flex items-center gap-1.5 bg-neutral-100 rounded-full p-1.5"
         >
+          {/* LEFT: Mic Button (Safe from Netlify badge on mobile/tablet) */}
+          <button
+            type="button"
+            onClick={handleVoiceInput}
+            className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${
+              isListening ? 'bg-neutral-900 text-white animate-pulse' : 'text-neutral-500 hover:text-neutral-900'
+            }`}
+            aria-label="Voice Input"
+            title="Voice Input"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.8"
+                d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"
+              />
+            </svg>
+          </button>
+
+          {/* CENTER: Always enabled so user can type or dictate next message while waiting */}
           <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder={isListening ? 'Listening...' : 'Ask anything...'}
-            className="flex-1 bg-transparent py-1.5 text-sm text-neutral-900 placeholder-neutral-400 focus:outline-none border-0"
+            placeholder={
+              isListening
+                ? 'Listening...'
+                : isBusy
+                ? 'Type your next question while waiting...'
+                : 'Ask anything...'
+            }
+            className="flex-1 bg-transparent py-1.5 px-1 text-sm text-neutral-900 placeholder-neutral-400 focus:outline-none border-0"
             autoComplete="off"
           />
-          <div className="flex items-center gap-1">
+
+          {/* RIGHT: Stop (■) button during streaming, otherwise Send button */}
+          {isBusy ? (
             <button
               type="button"
-              onClick={handleVoiceInput}
-              className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
-                isListening ? 'bg-neutral-900 text-white animate-pulse' : 'text-neutral-500 hover:text-neutral-900'
-              }`}
-              aria-label="Voice Input"
+              onClick={handleStopGenerating}
+              className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 bg-neutral-900 text-white cursor-pointer active:scale-95 transition-all"
+              aria-label="Stop generating"
+              title="Stop generating"
             >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+              <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24">
+                <rect x="6" y="6" width="12" height="12" rx="2" />
               </svg>
             </button>
+          ) : (
             <button
               type="submit"
               disabled={!canSend}
-              className={`w-9 h-9 rounded-full flex items-center justify-center transition-all ${
-                canSend ? 'bg-neutral-900 text-white cursor-pointer active:scale-95' : 'bg-neutral-200 text-neutral-400 cursor-not-allowed'
+              className={`w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0 transition-all ${
+                canSend
+                  ? 'bg-neutral-900 text-white cursor-pointer active:scale-95'
+                  : 'bg-neutral-200 text-neutral-400 cursor-not-allowed'
               }`}
               aria-label="Send"
+              title="Send"
             >
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" d="M5 12h14M12 5l7 7-7 7" />
               </svg>
             </button>
-          </div>
+          )}
         </form>
       </footer>
-
-      {/* OPTIONS MODAL */}
-      {showOptions && (
-        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-40 flex items-end md:items-center justify-center p-0 md:p-4" onClick={() => setShowOptions(false)}>
-          <div className="bg-white w-full max-w-sm rounded-t-2xl md:rounded-2xl p-5 space-y-3 shadow-xl" onClick={(e) => e.stopPropagation()}>
-            <div className="flex justify-between items-center border-b border-neutral-100 pb-2.5">
-              <span className="font-semibold text-neutral-900 text-sm">Options</span>
-              <button type="button" onClick={() => setShowOptions(false)} className="text-neutral-400 hover:text-neutral-700 text-xl font-bold">&times;</button>
-            </div>
-            <div className="space-y-1 text-sm text-neutral-700">
-              <button
-                type="button"
-                onClick={() => {
-                  handleClearChat();
-                  setShowOptions(false);
-                }}
-                className="w-full text-left p-2.5 rounded-xl hover:bg-neutral-100 flex items-center gap-3"
-              >
-                <span>🗑️</span> <span>Clear Chat</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  detectGps(true);
-                  setShowOptions(false);
-                  showToast('GPS लोकेशन अपडेट की जा रही है...');
-                }}
-                className="w-full text-left p-2.5 rounded-xl hover:bg-neutral-100 flex items-center gap-3"
-              >
-                <span>📍</span> <span>Update Exact GPS Location</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* PRIVATE ADMIN MONITORING DASHBOARD (Unlocked via 5-tap on Logo or ?admin=true) */}
       {showAdminModal && (
@@ -1001,7 +1275,7 @@ export default function App() {
             <div className="flex items-center justify-between px-5 py-3.5 border-b border-neutral-100">
               <div>
                 <h2 className="font-semibold text-neutral-900 text-sm">Vikash AI — Private Monitoring Dashboard</h2>
-                <p className="text-[11px] text-neutral-400">Netlify Server Password Protected</p>
+                <p className="text-[11px] text-neutral-400">Click any visitor session to view full chat history</p>
               </div>
               <button
                 type="button"
@@ -1041,13 +1315,15 @@ export default function App() {
                 </form>
               ) : (
                 <>
-                  {/* Integration Status */}
+                  {/* Integration Status Pills */}
                   <div className="flex flex-wrap gap-2">
                     {Object.entries(adminData?.integrations || {}).map(([name, ok]) => (
                       <span
                         key={name}
                         className={`px-2.5 py-1 rounded-full text-[11px] font-medium ${
-                          ok ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-600 border border-red-200'
+                          ok
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            : 'bg-red-50 text-red-600 border border-red-200'
                         }`}
                       >
                         {ok ? '●' : '○'} {name.toUpperCase()}
@@ -1071,7 +1347,21 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Top Clicked Links */}
+                  {/* Top Asked Topics */}
+                  {adminData?.stats?.topTopics?.length > 0 && (
+                    <div className="space-y-1.5">
+                      <h3 className="text-xs font-semibold text-neutral-700">Top Asked Topics</h3>
+                      <div className="flex flex-wrap gap-1.5">
+                        {adminData.stats.topTopics.map((t, i) => (
+                          <span key={i} className="px-2.5 py-1 rounded-lg bg-neutral-100 text-xs text-neutral-800">
+                            {t.topic}: <strong>{t.count}</strong>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Top Clicked Projects & Links */}
                   {adminData?.stats?.topClicks?.length > 0 && (
                     <div className="space-y-1.5">
                       <h3 className="text-xs font-semibold text-neutral-700">Top Clicked Projects & Links</h3>
@@ -1085,31 +1375,117 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Recent Visitor Questions */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-xs font-semibold text-neutral-700">Recent Visitor Activity</h3>
+                  {/* Search & Visitor Sessions with Click-to-Expand Full History */}
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-xs font-semibold text-neutral-700">Visitor Sessions ({filteredAdminSessions.length})</h3>
                       <button type="button" onClick={() => fetchAdminStats()} className="text-xs text-blue-600 font-medium">
                         Refresh
                       </button>
                     </div>
+
+                    <input
+                      type="text"
+                      value={adminSearch}
+                      onChange={(e) => setAdminSearch(e.target.value)}
+                      placeholder="Search by question, visitor name, or session ID..."
+                      className="w-full px-3 py-2 rounded-xl bg-neutral-100 text-xs text-neutral-900 placeholder-neutral-400 focus:outline-none"
+                    />
+
                     <div className="space-y-2">
-                      {(adminData?.recentSessions || []).map((s) => (
-                        <div key={s.sessionId} className="p-3 rounded-xl bg-neutral-50 border border-neutral-200/70 text-xs space-y-1">
-                          <div className="flex justify-between text-neutral-500">
-                            <span className="font-medium text-neutral-800">{s.sessionId}</span>
-                            <span>{s.messageCount} msgs</span>
+                      {filteredAdminSessions.map((s) => {
+                        const isExpanded = expandedSessionId === s.sessionId;
+                        return (
+                          <div
+                            key={s.sessionId}
+                            onClick={() => setExpandedSessionId(isExpanded ? null : s.sessionId)}
+                            className="p-3 rounded-xl bg-neutral-50 hover:bg-neutral-100/70 border border-neutral-200/80 text-xs space-y-1.5 cursor-pointer transition-colors"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                {s.isActiveNow && (
+                                  <span
+                                    className="w-2 h-2 rounded-full bg-emerald-500 flex-shrink-0"
+                                    title="Active Now"
+                                  />
+                                )}
+                                <span className="font-semibold text-neutral-900 truncate">
+                                  {s.visitorName && s.visitorName !== 'Visitor'
+                                    ? `${s.visitorName} (${s.sessionId})`
+                                    : s.sessionId}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 flex-shrink-0">
+                                <span className="text-neutral-500">{s.messageCount} msgs</span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleCopyTranscript(s, e)}
+                                  className="px-2 py-0.5 rounded bg-white border border-neutral-200 text-[10px] text-neutral-700 hover:bg-neutral-100"
+                                  title="Copy Full Chat"
+                                >
+                                  Copy
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleDeleteSession(s.sessionId, e)}
+                                  className="px-2 py-0.5 rounded bg-white border border-red-200 text-[10px] text-red-600 hover:bg-red-50"
+                                  title="Delete Session"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="text-[11px] text-neutral-400">
+                              {s.deviceInfo} {s.city ? `• ${s.city}` : ''}
+                            </div>
+
+                            {!isExpanded && s.lastUserMessage && (
+                              <p className="text-neutral-800 pt-0.5 truncate">
+                                <strong>Last Q:</strong> {s.lastUserMessage}
+                              </p>
+                            )}
+
+                            {/* Expanded Full Conversation View */}
+                            {isExpanded && (
+                              <div
+                                onClick={(e) => e.stopPropagation()}
+                                className="mt-2 pt-2.5 border-t border-neutral-200/80 space-y-2 max-h-64 overflow-y-auto"
+                              >
+                                {(s.conversation || []).length === 0 ? (
+                                  <p className="text-neutral-400 italic">No messages recorded.</p>
+                                ) : (
+                                  (s.conversation || []).map((turn, idx) => (
+                                    <div
+                                      key={idx}
+                                      className={`p-2 rounded-lg text-xs leading-relaxed ${
+                                        turn.role === 'user'
+                                          ? 'bg-white border border-neutral-200/80 text-neutral-900'
+                                          : 'bg-neutral-200/50 text-neutral-800'
+                                      }`}
+                                    >
+                                      <div className="flex justify-between text-[10px] text-neutral-400 mb-0.5">
+                                        <span className="font-semibold text-neutral-600">
+                                          {turn.role === 'user' ? s.visitorName || 'Visitor' : 'Vikash AI'}
+                                        </span>
+                                        {turn.ts && (
+                                          <span>
+                                            {new Date(turn.ts).toLocaleTimeString([], {
+                                              hour: '2-digit',
+                                              minute: '2-digit'
+                                            })}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <div className="whitespace-pre-wrap break-words">{turn.text}</div>
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            )}
                           </div>
-                          <div className="text-[11px] text-neutral-400">
-                            {s.deviceInfo} {s.city ? `• ${s.city}` : ''}
-                          </div>
-                          {s.lastUserMessage && (
-                            <p className="text-neutral-800 pt-1">
-                              <strong>Last Q:</strong> {s.lastUserMessage}
-                            </p>
-                          )}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 </>
