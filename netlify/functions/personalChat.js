@@ -513,7 +513,7 @@ async function fetchLiveCustomNotes() {
   const res = await supabaseRequest(
     'vikash_custom_notes?select=category,note_text,created_at&order=created_at.desc&limit=40',
     { method: 'GET' },
-    1800
+    950
   );
   if (res.ok && Array.isArray(res.data)) {
     cachedCustomNotes = res.data;
@@ -820,13 +820,14 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
               { role: 'model', parts: [{ text: 'Understood.' }] },
               ...contents
             ],
-            generationConfig: { temperature: 0.45 }
+            generationConfig: { temperature: 0.45, maxOutputTokens: 1024 }
           }
         : {
             systemInstruction: { parts: [{ text: systemInstruction }] },
             contents,
             generationConfig: {
-              temperature: withSearch ? 0.25 : 0.45
+              temperature: withSearch ? 0.25 : 0.45,
+              maxOutputTokens: 1024
             }
           };
 
@@ -834,7 +835,8 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
         payload.tools = [{ google_search: {} }];
       }
 
-      const timeoutMs = withSearch ? 11000 : i === 0 ? 9500 : 5500;
+      // Fail fast on slow model headers so plenty of execution window remains for full streaming!
+      const timeoutMs = withSearch ? 6500 : 4500;
 
       try {
         const res = await fetchWithTimeout(
@@ -916,12 +918,12 @@ async function callGeminiBufferedRescue(apiKey, systemInstruction, contents, ski
             { role: 'model', parts: [{ text: 'Understood.' }] },
             ...contents
           ],
-          generationConfig: { temperature: 0.45 }
+          generationConfig: { temperature: 0.45, maxOutputTokens: 1024 }
         }
       : {
           systemInstruction: { parts: [{ text: systemInstruction }] },
           contents,
-          generationConfig: { temperature: 0.45 }
+          generationConfig: { temperature: 0.45, maxOutputTokens: 1024 }
         };
 
     try {
@@ -1209,6 +1211,7 @@ export default async (req) => {
 
         let fullReply = '';
         let buf = '';
+        let lastFinishReason = '';
         const reader = sseResult.response.body.getReader();
 
         const processSseLine = (rawLine) => {
@@ -1218,8 +1221,12 @@ export default async (req) => {
           if (!raw || raw === '[DONE]') return;
           try {
             const parsed = JSON.parse(raw);
+            const candidate = parsed?.candidates?.[0];
+            if (candidate?.finishReason) {
+              lastFinishReason = candidate.finishReason;
+            }
             const textPart =
-              parsed?.candidates?.[0]?.content?.parts
+              candidate?.content?.parts
                 ?.filter((p) => typeof p.text === 'string' && !p.thought)
                 .map((p) => p.text)
                 .join('') || '';
@@ -1238,6 +1245,13 @@ export default async (req) => {
             const lines = buf.split(/\r?\n/);
             buf = lines.pop() || '';
             for (const line of lines) {
+              processSseLine(line);
+            }
+          }
+
+          buf += decoder.decode();
+          if (buf.trim()) {
+            for (const line of buf.split(/\r?\n/)) {
               processSseLine(line);
             }
           }
@@ -1272,8 +1286,23 @@ export default async (req) => {
               }
             }
           }
+          // Send `done` to user FIRST (Laddu AI pattern) so UI finishes instantly without waiting on Supabase!
+          sendEvent({
+            type: 'done',
+            isError: false,
+            reply: fullReply,
+            modelUsed: sseResult.modelUsed,
+            finishReason: lastFinishReason || 'STOP',
+            intentUsed: intent,
+            detectedVisitorName: effectiveVisitorName,
+            recommendedProjects,
+            actionButtons,
+            showLeadCard,
+            whatsappNumber: socialLinks.whatsappNumber,
+            quickFollowUps
+          });
 
-          const supabaseStatus = await saveChatTurnToSupabase({
+          await saveChatTurnToSupabase({
             sessionId: body.sessionId,
             visitorName: effectiveVisitorName,
             deviceInfo: body.clientDevice?.platform || '',
@@ -1283,20 +1312,6 @@ export default async (req) => {
             botReply: fullReply
           });
 
-          sendEvent({
-            type: 'done',
-            isError: false,
-            reply: fullReply,
-            modelUsed: sseResult.modelUsed,
-            intentUsed: intent,
-            detectedVisitorName: effectiveVisitorName,
-            recommendedProjects,
-            actionButtons,
-            showLeadCard,
-            whatsappNumber: socialLinks.whatsappNumber,
-            supabaseStatus,
-            quickFollowUps
-          });
           controller.close();
         } catch (streamErr) {
           sendEvent({
