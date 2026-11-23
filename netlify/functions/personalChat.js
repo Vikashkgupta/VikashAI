@@ -1,10 +1,10 @@
 // File: netlify/functions/personalChat.js
-// Vikash AI — 0ms Intent-Based Smart Router & Ultra-Fast Streaming Backend (Netlify Functions 2.0 SSE)
-// Architecture:
-// - 0ms Synchronous Intent Router (CASUAL_CHAT, SOCIAL_LINKS, INSTAGRAM_STATS, GITHUB_PROJECTS, LIVE_SEARCH, FULL_BIO)
-// - Active 2026 Model Priority (gemini-flash-lite-latest, gemini-2.5-flash-lite, gemini-3.5-flash-lite, gemini-2.5-flash)
-// - Permanent 404/429 Model Blocking (retired gemini-2.0-* excluded; any 404/429 model blocked immediately)
-// - Dynamic Slim Modular System Prompts & Non-blocking Background GitHub Cache Warmup
+// Vikash AI — Ultra-Fast Streaming Personal Assistant Backend (Netlify Functions 2.0 Web-Standard SSE)
+// Features:
+// - Sub-2s First Token via parallel GitHub/Instagram caching & zero pre-flight Supabase GET delay
+// - Auto-failover across distinct Gemini model families (prevents 503 High Demand retries)
+// - Smart Visitor Name Memory (detects when visitor shares their name & updates Supabase)
+// - Recruiter / Client Mode awareness (?mode=recruiter) & Live GitHub latest commit/repo activity
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -13,19 +13,10 @@ const CORS_HEADERS = {
   'Access-Control-Max-Age': '86400'
 };
 
-// Active models (retired gemini-2.0-* removed because Google shut them down with 404)
-const FAST_DEFAULT_MODELS = [
-  'gemini-flash-lite-latest',
-  'gemini-2.5-flash-lite',
-  'gemini-3.5-flash-lite',
-  'gemini-2.5-flash',
-  'gemini-flash-latest'
-];
-
-let cachedWorkingModel = 'gemini-flash-lite-latest';
+let cachedWorkingModel = null;
 let cachedModels = null;
 let cachedModelsAt = 0;
-const blockedModels = new Set(['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-flash-001', 'gemini-2.0-flash-lite-001']);
+const quotaBlockedModels = new Set();
 
 let cachedGithub = null;
 let cachedGithubAt = 0;
@@ -68,12 +59,77 @@ function getISTDateTime() {
   return { dateStr, timeStr };
 }
 
+// 0ms Intent Classifier: detects exactly what the visitor is asking so we only
+// await the required data sources/tools and keep short/casual questions super fast.
+function classifyUserIntent(message, ghData, igData) {
+  const q = String(message || '').trim().toLowerCase();
+  const wordCount = q.split(/\s+/).filter(Boolean).length;
+
+  const isGreetingOrCasual =
+    /^(hi+|hello+|hey+|hlo|yo|namaste|pranam|ram ram|gm|gn|good morning|good afternoon|good evening|good night|ok|okay|hmm|ha|haan|yes|no|thanks|thank you|bye|kya haal|kaise ho|kya chal raha|kya kr rhe|kon ho|kaun ho|who are you|tum kaun)\b/i.test(
+      q
+    ) ||
+    (wordCount <= 4 &&
+      /(hi|hello|hey|namaste|kaise|haal|chal raha|naam|kya kar|who are|tum kaun|मस्ती|हाल)/i.test(q));
+
+  const wantsInstagramStats =
+    /follower|following|reel|reels|post|posts|like|likes|comment|comments|story|stories|graph|stats|insights|इंस्टा.*(फॉलोअर|पोस्ट|लाइक|कमेंट|स्टोरी)/i.test(
+      q
+    );
+
+  const wantsSocialOrEnvLinks =
+    /instagram|insta|facebook|fb|twitter|x\.com|discord|linkedin|github|portfolio|linktree|linktr|whatsapp|व्हाट्सएप|phone|mobile|call|number|email|mail|contact|संपर्क|लिंक|link|social|प्रोफाइल|profile|जुड़/i.test(
+      q
+    ) && !wantsInstagramStats;
+
+  const wantsProjectsOrCode =
+    /project|projects|repo|repos|repository|code|coding|mern|react|node|django|asp\.net|skill|skills|resume|cv|intern|internship|hire|hiring|btech|aiml|diploma|college|पढ़ाई|प्रोजेक्ट|काम|कोड|स्किल|इंटर्नशिप|काम कर रहा/i.test(
+      q
+    );
+
+  const wantsSearch =
+    /news|ताज़ा|समाचार|खबर|weather|मौसम|temperature|temp|बारिश|rain|trending|ट्रेंडिंग|cricket|match|score|ipl|price|gold|stock|latest|today|yesterday|आज|कल|who is|what is|when is|where is|search|इंटरनेट|google|current/i.test(
+      q
+    );
+
+  const isComplexBroadQuery =
+    !isGreetingOrCasual &&
+    !wantsInstagramStats &&
+    !wantsSocialOrEnvLinks &&
+    !wantsProjectsOrCode &&
+    !wantsSearch &&
+    (wordCount > 10 || /poora|pura|sab kuch|everything|detail|details|explain|बताओ.*बारे|पूरा/i.test(q));
+
+  const needsGithub = Boolean(
+    process.env.GITHUB_USERNAME && (wantsProjectsOrCode || isComplexBroadQuery)
+  );
+  const needsInstagram = Boolean(
+    process.env.IG_ACCESS_TOKEN && process.env.IG_USER_ID && (wantsInstagramStats || isComplexBroadQuery)
+  );
+
+  // Warm caches in background when a casual/link query runs so the next question is even faster
+  const warmGithubInBg = Boolean(process.env.GITHUB_USERNAME && !needsGithub && !ghData);
+  const warmInstagramInBg = Boolean(
+    process.env.IG_ACCESS_TOKEN && process.env.IG_USER_ID && !needsInstagram && !igData
+  );
+
+  return {
+    isGreetingOrCasual,
+    wantsInstagramStats,
+    wantsSocialOrEnvLinks,
+    wantsProjectsOrCode,
+    wantsSearch,
+    isComplexBroadQuery,
+    needsGithub,
+    needsInstagram,
+    warmGithubInBg,
+    warmInstagramInBg
+  };
+}
+
 function isSupportedTextModel(name) {
   const n = String(name || '').toLowerCase();
   if (
-    blockedModels.has(n) ||
-    n.includes('2.0-') ||
-    n.includes('1.5-') ||
     n.includes('tts') ||
     n.includes('image') ||
     n.includes('imagen') ||
@@ -81,13 +137,11 @@ function isSupportedTextModel(name) {
     n.includes('embedding') ||
     n.includes('aqa') ||
     n.includes('audio') ||
-    n.includes('live') ||
-    n.includes('transcribe') ||
     n.includes('robotics') ||
     n.includes('thinking') ||
     n.includes('learnlm') ||
     n.includes('2.5-pro') ||
-    n.includes('-pro') ||
+    n.includes('2.5-flash') ||
     n.includes('exp')
   ) {
     return false;
@@ -97,34 +151,33 @@ function isSupportedTextModel(name) {
 
 function rankModel(name) {
   const n = String(name || '').toLowerCase();
-  if (blockedModels.has(name) || blockedModels.has(n)) return -100;
+  if (quotaBlockedModels.has(name)) return -100;
   if (n === 'gemini-flash-lite-latest') return 100;
-  if (n === 'gemini-2.5-flash-lite' || n.startsWith('gemini-2.5-flash-lite')) return 96;
-  if (n === 'gemini-3.5-flash-lite' || (n.startsWith('gemini-3') && n.includes('flash-lite'))) return 92;
-  if (n === 'gemini-2.5-flash' || n.startsWith('gemini-2.5-flash')) return 88;
+  if (n.startsWith('gemini-2.0-flash-lite')) return 96;
+  if (n.startsWith('gemini-2.0-flash') && !n.includes('lite')) return 92;
+  if (n.startsWith('gemini-3') && n.includes('flash-lite')) return 88;
   if (n === 'gemini-flash-latest') return 84;
-  if (n.includes('flash-lite')) return 80;
-  if (n.includes('flash')) return 60;
+  if (n.startsWith('gemini-3') && n.includes('flash')) return 60;
   return 40;
 }
 
 function buildDiverseModelOrder(list) {
-  const usable = list.filter((m) => !blockedModels.has(m) && !m.includes('2.0-'));
-  const pool = usable.length > 0 ? usable : FAST_DEFAULT_MODELS.filter((m) => !blockedModels.has(m));
+  const usable = list.filter((m) => !quotaBlockedModels.has(m));
+  const pool = usable.length > 0 ? usable : list;
   const base =
-    cachedWorkingModel && !blockedModels.has(cachedWorkingModel)
+    cachedWorkingModel && !quotaBlockedModels.has(cachedWorkingModel)
       ? [cachedWorkingModel, ...pool.filter((m) => m !== cachedWorkingModel)]
       : [...pool];
 
   const distinct = [];
   const usedFamilies = new Set();
   for (const m of base) {
-    const family = m.includes('2.5-flash-lite')
-      ? '2.5-lite'
-      : m.includes('3.5-flash-lite')
-      ? '3.5-lite'
-      : m.includes('2.5-flash')
-      ? '2.5-flash'
+    const family = m.includes('2.0-flash-lite')
+      ? '2.0-lite'
+      : m.includes('2.0-flash')
+      ? '2.0-flash'
+      : m.includes('3.1-flash-lite')
+      ? '3.1-lite'
       : m.includes('flash-lite-latest')
       ? 'lite-latest'
       : m;
@@ -139,12 +192,7 @@ function buildDiverseModelOrder(list) {
   return distinct;
 }
 
-function getFastModelCandidates() {
-  return buildDiverseModelOrder(FAST_DEFAULT_MODELS);
-}
-
-// Lazy fallback only — never called on healthy requests
-async function discoverGeminiModelsLazy(apiKey) {
+async function discoverGeminiModels(apiKey) {
   const now = Date.now();
   if (cachedModels && now - cachedModelsAt < 15 * 60 * 1000) {
     return buildDiverseModelOrder(cachedModels);
@@ -175,10 +223,17 @@ async function discoverGeminiModelsLazy(apiKey) {
       }
     }
   } catch (err) {
-    console.warn('[personalChat] Lazy model discovery warning:', err?.message);
+    console.warn('[personalChat] Model discovery fallback:', err?.message);
   }
 
-  return getFastModelCandidates();
+  const fallbackList = [
+    'gemini-flash-lite-latest',
+    'gemini-2.0-flash-lite',
+    'gemini-2.0-flash',
+    'gemini-3.1-flash-lite',
+    'gemini-flash-latest'
+  ];
+  return buildDiverseModelOrder(fallbackList);
 }
 
 function extractVisibleText(parts) {
@@ -314,26 +369,24 @@ async function fetchInstagramData() {
 }
 
 function getSocialLinks(ghData, igData) {
-  const ghUsername = (process.env.GITHUB_USERNAME || 'Vikashkgupta').trim();
-  const ghUrl = process.env.GITHUB_URL || ghData?.htmlUrl || `https://github.com/${ghUsername}`;
-  const igUrl = process.env.IG_URL || `https://instagram.com/${igData?.username || '_vikashkgupta'}`;
+  const ghUrl =
+    process.env.GITHUB_URL ||
+    ghData?.htmlUrl ||
+    `https://github.com/${(process.env.GITHUB_USERNAME || 'Vikashkgupta').trim()}`;
+  const igUrl =
+    process.env.IG_URL || `https://instagram.com/${igData?.username || '_vikashkgupta'}`;
   const twitterUrl =
-    process.env.TWITTER_URL || `https://x.com/${ghData?.twitterUsername || '_VikashkGupta'}`;
+    process.env.TWITTER_URL ||
+    `https://x.com/${ghData?.twitterUsername || '_VikashkGupta'}`;
   const discordUrl = String(process.env.DISCORD_URL || '').trim();
-  const facebookUrl = String(
-    process.env.FACEBOOK_URL || 'https://www.facebook.com/vikash.kumar.gupta.289183'
-  ).trim();
+  const facebookUrl = String(process.env.FACEBOOK_URL || 'https://www.facebook.com/vikash.kumar.gupta.289183').trim();
   const whatsappRaw = String(process.env.WHATSAPP_NUMBER || '919931890824').replace(/[^\d]/g, '');
   const whatsappUrl = whatsappRaw ? `https://wa.me/${whatsappRaw}` : '';
   const phoneRaw = String(process.env.PUBLIC_PHONE || '+919931890824').trim();
   const phoneUrl = phoneRaw ? `tel:${phoneRaw.replace(/\s+/g, '')}` : '';
   const email = String(process.env.CONTACT_EMAIL || 'vikashkumargupta1000@gmail.com').trim();
-  const linkedinUrl = String(
-    process.env.LINKEDIN_URL || 'https://www.linkedin.com/in/vikash-kumar-gupta-505899295'
-  ).trim();
-  const portfolioUrl = String(
-    process.env.PORTFOLIO_URL || ghData?.blog || 'https://vikashkumargupta.netlify.app'
-  ).trim();
+  const linkedinUrl = String(process.env.LINKEDIN_URL || 'https://www.linkedin.com/in/vikash-kumar-gupta-505899295').trim();
+  const portfolioUrl = String(process.env.PORTFOLIO_URL || ghData?.blog || 'https://vikashkumargupta.netlify.app').trim();
   const linktreeUrl = String(process.env.LINKTREE_URL || 'https://linktr.ee/vikashgupta').trim();
 
   return {
@@ -373,122 +426,8 @@ function detectVisitorNameFromText(message, currentName) {
 
 function detectIntentFlags(message) {
   const m = String(message || '').toLowerCase();
-  const isHiringOrCollab = /hire|hiring|intern|internship|job|freelance|website banwani|project banwana|collab|work with|contact vikash|बात करनी|काम करवाना|वेबसाइट/i.test(
-    m
-  );
+  const isHiringOrCollab = /hire|hiring|intern|internship|job|freelance|website banwani|project banwana|collab|work with|contact vikash|बात करनी|काम करवाना|वेबसाइट/i.test(m);
   return { isHiringOrCollab };
-}
-
-// 0ms Smart Intent Router
-// Intents: CASUAL_CHAT | SOCIAL_LINKS | INSTAGRAM_STATS | GITHUB_PROJECTS | LIVE_SEARCH | FULL_BIO
-function classifyIntent(message, history = [], chatMode = 'default') {
-  const m = String(message || '').trim().toLowerCase();
-
-  const isLiveSearch = /\b(news|weather|temperature|trending|cricket|match|score|price|stock|bitcoin|crypto|latest|today|yesterday|who is|what is)\b|ताज़ा|समाचार|खबर|मौसम|तापमान|ट्रेंडिंग|क्रिकेट|स्कोर|आज|कल|इंटरनेट|google/i.test(
-    m
-  );
-  const isInstagramStats = /follower|followers|following|post|posts|reel|reels|like|likes|comment|comments|ig stats|instagram stats|फ़ॉलोअर्स|फॉलोअर|पोस्ट|रील|लाइक|कमेंट/i.test(
-    m
-  );
-  const isGithubOrProjects = /\b(github|repo|repos|repository|repositories|project|projects|code|coding|tech stack|skills|skill|stack|commit|latest work|working on|portfolio site|react|node|ai|gemini)\b|प्रोजेक्ट|प्रोजेक्ट्स|कोडिंग|स्किल|स्किल्स|गिटहब|बनाया|काम कर रहे/i.test(
-    m
-  );
-  const isSocialLinkRequest = /\b(instagram|insta|facebook|fb|linkedin|twitter|x\.com|whatsapp|link|links|linktree|contact|phone|number|call|email|mail|discord|social|socials|profile)\b|लिंक|संपर्क|नंबर|फ़ोन|कॉल|व्हाट्सएप|इंस्टा|फेसबुक|लिंक्डइन|ट्विटर|सोशल/i.test(
-    m
-  );
-  const isFullBioRequest = /\b(bio|about vikash|tell me about vikash|who is vikash|everything|full profile|complete profile|overview|introduce)\b|पूरा बायो|सब बताओ|विकास कौन|विकास के बारे|परिचय|बायो/i.test(
-    m
-  );
-
-  // 1. Big combined question or bio + projects + socials
-  if (
-    isFullBioRequest ||
-    (isGithubOrProjects && isSocialLinkRequest && /सब|all|both|पूरा|bio|about/i.test(m))
-  ) {
-    return {
-      intent: 'FULL_BIO',
-      needsGithub: true,
-      needsInstagram: isInstagramStats,
-      needsSearch: false
-    };
-  }
-
-  // 2. Live Web Search (Weather, News, Cricket, etc.)
-  if (isLiveSearch && !isGithubOrProjects && !isInstagramStats) {
-    return {
-      intent: 'LIVE_SEARCH',
-      needsGithub: false,
-      needsInstagram: false,
-      needsSearch: true
-    };
-  }
-
-  // 3. Instagram Stats / Followers / Posts
-  if (isInstagramStats) {
-    return {
-      intent: 'INSTAGRAM_STATS',
-      needsGithub: false,
-      needsInstagram: true,
-      needsSearch: false
-    };
-  }
-
-  // 4. GitHub / Projects / Coding Skills (or Recruiter mode queries)
-  if (isGithubOrProjects || (chatMode === 'recruiter' && m.length > 15 && !isSocialLinkRequest)) {
-    return {
-      intent: 'GITHUB_PROJECTS',
-      needsGithub: true,
-      needsInstagram: false,
-      needsSearch: false
-    };
-  }
-
-  // 5. Pure Social / Contact Link requests (0ms from process.env)
-  if (isSocialLinkRequest) {
-    return {
-      intent: 'SOCIAL_LINKS',
-      needsGithub: false,
-      needsInstagram: false,
-      needsSearch: false
-    };
-  }
-
-  // Follow-up check using recent history (for short follow-ups like "isme se react wala?", "live link do", "aur batao")
-  const isShortFollowUp =
-    m.split(/\s+/).length <= 8 &&
-    /\b(react|ai|gemini|live|link|more|details|uska|iska|isme|usme|aur|which|one|second|first)\b|उसमें|इसमें|उसका|इसका|और|लिंक|कौनसा|दिखाओ/i.test(
-      m
-    );
-  if (isShortFollowUp && Array.isArray(history) && history.length > 0) {
-    const recentText = history
-      .slice(-2)
-      .map((h) => String(h?.text || '').toLowerCase())
-      .join(' ');
-    if (/github|repo|project|प्रोजेक्ट|kshirsagar/i.test(recentText)) {
-      return {
-        intent: 'GITHUB_PROJECTS',
-        needsGithub: true,
-        needsInstagram: false,
-        needsSearch: false
-      };
-    }
-    if (/instagram|follower|post|like|इंस्टा/i.test(recentText)) {
-      return {
-        intent: 'INSTAGRAM_STATS',
-        needsGithub: false,
-        needsInstagram: true,
-        needsSearch: false
-      };
-    }
-  }
-
-  // 6. Default: Ultra-Fast Casual Chat (0ms API overhead)
-  return {
-    intent: 'CASUAL_CHAT',
-    needsGithub: false,
-    needsInstagram: false,
-    needsSearch: false
-  };
 }
 
 async function supabaseRequest(path, options = {}) {
@@ -576,35 +515,7 @@ async function saveChatTurnToSupabase({ sessionId, visitorName, deviceInfo, city
   }
 }
 
-function buildValidGeminiContents(history, userMessage) {
-  const cleaned = [];
-  for (const h of history) {
-    if (!h || !h.text) continue;
-    const role = h.role === 'user' ? 'user' : 'model';
-    const text = String(h.text).trim();
-    if (!text || text.includes('Something went wrong')) continue;
-    if (cleaned.length === 0 && role === 'model') continue;
-
-    if (cleaned.length > 0 && cleaned[cleaned.length - 1].role === role) {
-      cleaned[cleaned.length - 1].parts[0].text += '\n' + text;
-    } else {
-      cleaned.push({ role, parts: [{ text }] });
-    }
-  }
-
-  if (cleaned.length > 0 && cleaned[cleaned.length - 1].role === 'user') {
-    if (cleaned[cleaned.length - 1].parts[0].text !== userMessage) {
-      cleaned[cleaned.length - 1].parts[0].text += '\n' + userMessage;
-    }
-  } else {
-    cleaned.push({ role: 'user', parts: [{ text: userMessage }] });
-  }
-  return cleaned;
-}
-
-// Dynamic Slim Modular System Prompt (only injects data required by the matched intent)
-function buildModularSystemPrompt({
-  intent,
+function buildSystemPrompt({
   customKnowledge,
   ghData,
   igData,
@@ -612,36 +523,32 @@ function buildModularSystemPrompt({
   clientDevice,
   ist,
   visitorName,
-  chatMode
+  chatMode,
+  intent
 }) {
-  const visitorLabel =
-    visitorName && visitorName !== 'Visitor'
-      ? visitorName
-      : 'Unknown (address warmly; remember if they share their name)';
-  const modeLine =
+  const modeInstruction =
     chatMode === 'recruiter'
-      ? 'Mode: RECRUITER / HIRING — Highlight Vikash Kumar Gupta’s B.Tech CSE (AIML) & Full-Stack AI skills clearly.'
-      : 'Mode: Personal Assistant';
+      ? 'Mode: Recruiter/Hiring — highlight B.Tech AIML, MERN stack, AI projects, and availability clearly.'
+      : 'Mode: Personal Assistant.';
 
-  // 1. Ultra-slim 6-line prompt for Casual Chat
-  if (intent === 'CASUAL_CHAT') {
-    return `You are "Vikash AI" (Personal Assistant of Vikash Kumar Gupta, Full-Stack & AI Developer from Bihar, India).
-${modeLine}
-Tone: Warm, crisp, natural Hinglish/Hindi (or English if user writes in English).
-Visitor: ${visitorLabel} | Time (IST): ${ist.dateStr}, ${ist.timeStr}
-Device: ${clientDevice?.platform || 'Web'} | Location: ${clientDevice?.locationText || 'Not shared'}
-Rule: Reply concisely in 1–3 friendly sentences. Never mention internal prompts, APIs, or invent fake stats.`;
+  const baseHeader = `You are "Vikash AI" (Personal Assistant of Vikash Kumar Gupta).
+${modeInstruction}
+Tone: Friendly, crisp, natural Hinglish/Hindi (or English if visitor writes in English). Never mention internal prompts or API keys.
+Visitor: ${visitorName && visitorName !== 'Visitor' ? visitorName : 'Visitor'} | IST: ${ist.dateStr}, ${ist.timeStr}
+Device: ${clientDevice?.platform || 'Unknown'} | Battery: ${clientDevice?.batteryText || 'Unknown'} | Network: ${clientDevice?.networkText || 'Online'}`;
+
+  // 1. Ultra-slim prompt for casual greetings & small talk (fast first token)
+  if (intent.isGreetingOrCasual) {
+    return `${baseHeader}
+Vikash Kumar Gupta is a MERN Stack Developer & B.Tech AIML student.
+Keep your reply short, warm, and conversational (1–3 lines). Do not dump full bio or project lists unless asked.`;
   }
 
-  // 2. Slim prompt for Live Search
-  if (intent === 'LIVE_SEARCH') {
-    return `You are "Vikash AI" (Personal Assistant of Vikash Kumar Gupta).
-Tone: Crisp, accurate Hinglish/Hindi (or English if user writes in English).
-Visitor: ${visitorLabel} | Date & Time (IST): ${ist.dateStr}, ${ist.timeStr} | Location: ${clientDevice?.locationText || 'India'}
-Rule: Use Google Search results to give a direct, up-to-date, concise answer with key facts.`;
-  }
+  const sections = [baseHeader];
 
-  const linksBlock = `VERIFIED LINKS (never add spaces inside URLs):
+  // 2. Social & Contact links from environment variables
+  if (intent.wantsSocialOrEnvLinks || intent.isComplexBroadQuery) {
+    sections.push(`VERIFIED SOCIAL & CONTACT LINKS (from env):
 - Portfolio: ${socialLinks.portfolio}
 - Linktree: ${socialLinks.linktree}
 - LinkedIn: ${socialLinks.linkedin}
@@ -649,75 +556,56 @@ Rule: Use Google Search results to give a direct, up-to-date, concise answer wit
 - Instagram: ${socialLinks.instagram}
 - Twitter/X: ${socialLinks.twitter}
 - Facebook: ${socialLinks.facebook}
+- Discord: ${socialLinks.discord || 'Not set'}
 - WhatsApp: ${socialLinks.whatsapp}
 - Phone: ${socialLinks.phone} (${socialLinks.phoneUrl})
-- Email: ${socialLinks.email}`;
-
-  // 3. Slim prompt for Social / Contact Links
-  if (intent === 'SOCIAL_LINKS') {
-    return `You are "Vikash AI" (Personal Assistant of Vikash Kumar Gupta).
-${modeLine}
-Tone: Friendly, crisp Hinglish/Hindi (or English if user writes in English).
-Visitor: ${visitorLabel} | Time (IST): ${ist.dateStr}, ${ist.timeStr}
-${linksBlock}
-Rule: Share only the requested verified links cleanly and concisely. Never invent URLs.`;
+- Email: ${socialLinks.email}`);
   }
 
-  // 4. Slim prompt for Instagram Stats
-  if (intent === 'INSTAGRAM_STATS') {
+  // 3. Instagram Graph API stats ONLY when requested or complex query
+  if (intent.needsInstagram || intent.wantsInstagramStats) {
     const igSummary = igData
-      ? `Username: @${igData.username} | Followers: ${igData.followersCount} | Following: ${igData.followsCount} | Total Posts: ${igData.mediaCount}\nRecent Posts:\n${igData.posts
-          .map(
-            (p) =>
-              `- Post #${p.index} (${p.type}): "${p.caption || 'No caption'}" | Likes: ${p.likes} | Comments: ${p.comments} | Link: ${p.permalink}`
-          )
-          .join('\n')}`
-      : 'Instagram Graph API is not configured or temporarily unavailable.';
-
-    return `You are "Vikash AI" (Personal Assistant of Vikash Kumar Gupta).
-Tone: Friendly, crisp Hinglish/Hindi (or English if user writes in English).
-Visitor: ${visitorLabel} | Time (IST): ${ist.dateStr}, ${ist.timeStr}
-Instagram Profile: ${socialLinks.instagram}
-LIVE INSTAGRAM STATS:
-${igSummary}
-Rule: Present exact stats from above concisely. Never invent fake numbers.`;
+      ? `Username: @${igData.username} | Followers: ${igData.followersCount} | Following: ${igData.followsCount} | Posts: ${igData.mediaCount}
+Recent Posts:
+${igData.posts
+  .map(
+    (p) =>
+      `- #${p.index} (${p.type}): "${p.caption || 'No caption'}" | Likes: ${p.likes} | Comments: ${p.comments} | ${p.permalink}`
+  )
+  .join('\n')}`
+      : 'Instagram Graph API is not implemented/configured yet (IG_ACCESS_TOKEN / IG_USER_ID missing). Let the user know clearly that live Instagram stats integration is not connected yet.';
+    sections.push(`INSTAGRAM STATS:\n${igSummary}`);
   }
 
-  // 5. GITHUB_PROJECTS or FULL_BIO
-  const projectsSummary = ghData?.repos?.length
-    ? ghData.repos
-        .map(
-          (r, i) =>
-            `${i + 1}. ${r.name} (Updated: ${r.updatedAt ? r.updatedAt.slice(0, 10) : 'Recent'}) — ${r.description} | Tech: ${r.tags.join(', ') || 'Code'} | Stars: ${r.stars} | GitHub: ${r.githubUrl}${r.liveUrl ? ` | Live: ${r.liveUrl}` : ''}`
-        )
-        .join('\n')
-    : 'No GitHub repositories loaded yet.';
+  // 4. GitHub & Custom Knowledge ONLY when relevant to Vikash/projects/skills/bio
+  if (intent.needsGithub || intent.wantsProjectsOrCode || intent.isComplexBroadQuery) {
+    const projectsSummary = ghData?.repos?.length
+      ? ghData.repos
+          .slice(0, 8)
+          .map(
+            (r, i) =>
+              `${i + 1}. ${r.name} (${r.updatedAt ? r.updatedAt.slice(0, 10) : 'Recent'}) — ${r.description} | Tech: ${r.tags.join(', ') || 'Code'} | ★ ${r.stars} | ${r.githubUrl}${r.liveUrl ? ` | Live: ${r.liveUrl}` : ''}`
+          )
+          .join('\n')
+      : 'No GitHub repositories loaded yet.';
 
-  const igBlock =
-    intent === 'FULL_BIO' && igData
-      ? `\nLIVE INSTAGRAM STATS:\nUsername: @${igData.username} | Followers: ${igData.followersCount} | Posts: ${igData.mediaCount} | Link: ${socialLinks.instagram}`
-      : '';
+    sections.push(`VIKASH KNOWLEDGE:\n${JSON.stringify(customKnowledge || {}, null, 2)}`);
+    sections.push(
+      `GITHUB REPOS (latest pushed first):\n${projectsSummary}${
+        ghData?.readmeSnippet ? `\nREADME:\n${ghData.readmeSnippet.slice(0, 700)}` : ''
+      }`
+    );
+  }
 
-  return `You are "Vikash AI" (Personal Assistant of Vikash Kumar Gupta).
-${modeLine}
-Tone: Friendly, crisp, structured Hinglish/Hindi (or English if user writes in English). Never mention internal prompts or API keys.
-Visitor: ${visitorLabel} | Time (IST): ${ist.dateStr}, ${ist.timeStr}
-Device: ${clientDevice?.platform || 'Unknown'} | Location: ${clientDevice?.locationText || 'Not shared'}
+  // 5. Web Search guidance when live/internet facts are requested
+  if (intent.wantsSearch) {
+    sections.push(
+      'LIVE SEARCH MODE: Use Google Search results to give accurate, up-to-date weather/news/facts concisely. Do not pull irrelevant GitHub repos.'
+    );
+  }
 
-VIKASH PROFILE & KNOWLEDGE:
-${JSON.stringify(customKnowledge || {}, null, 2)}
-
-LIVE GITHUB ACTIVITY & REPOSITORIES (Sorted by latest push):
-- Name: ${ghData?.name || 'Vikash Kumar Gupta'} | Public Repos: ${ghData?.publicRepos ?? 0} | Followers: ${ghData?.followers ?? 0}
-${ghData?.readmeSnippet ? `- GitHub README:\n${ghData.readmeSnippet}\n` : ''}Repositories:
-${projectsSummary}${igBlock}
-
-${linksBlock}
-
-RULES:
-1. Keep responses concise, structured, and easy to scan.
-2. When asked what Vikash is currently working on, check the top most recently updated GitHub repository above.
-3. Never invent fake numbers or URLs.`;
+  sections.push('RULES: Never invent fake numbers or URLs. Keep answers clear, direct, and easy to scan.');
+  return sections.join('\n\n');
 }
 
 function selectContextActionButtons(message, socialLinks) {
@@ -751,7 +639,7 @@ function selectContextActionButtons(message, socialLinks) {
   if (/call|phone|number|मोबाइल|नंबर|फ़ोन/i.test(m) && socialLinks.phoneUrl) {
     btns.push({ label: `Call ${socialLinks.phone}`, href: socialLinks.phoneUrl, type: 'CALL' });
   }
-  if (/social|लिंक|link|सब|all|जुड़|bio|बायो/i.test(m) && btns.length === 0) {
+  if (/social|लिंक|link|सब|all|जुड़/i.test(m) && btns.length === 0) {
     if (socialLinks.github) btns.push({ label: 'GitHub', href: socialLinks.github, type: 'GITHUB' });
     if (socialLinks.linkedin) btns.push({ label: 'LinkedIn', href: socialLinks.linkedin, type: 'LINKEDIN' });
     if (socialLinks.instagram) btns.push({ label: 'Instagram', href: socialLinks.instagram, type: 'INSTAGRAM' });
@@ -764,7 +652,7 @@ function selectContextActionButtons(message, socialLinks) {
 function selectRelevantProjects(message, ghData) {
   const m = String(message || '').toLowerCase();
   if (!ghData?.repos?.length) return [];
-  if (!/project|projects|प्रोजेक्ट|काम|work|portfolio|repo|github|बनाया|latest|recent|working on|bio|बायो/i.test(m)) {
+  if (!/project|projects|प्रोजेक्ट|काम|work|portfolio|repo|github|बनाया|latest|recent|working on/i.test(m)) {
     return [];
   }
 
@@ -824,7 +712,7 @@ export default async (req) => {
     try {
       body = await req.json();
     } catch {
-      return jsonResponse(400, { success: false, isError: true, error: 'Invalid JSON body' });
+      return jsonResponse(400, { success: false, error: 'Invalid JSON body' });
     }
 
     const apiKey = String(process.env.GEMINI_API_KEY || '').trim();
@@ -836,15 +724,14 @@ export default async (req) => {
       });
     }
 
+    const models = await discoverGeminiModels(apiKey);
     const ist = getISTDateTime();
 
-    // Welcome Greeting (Zero pre-flight /models call)
     if (body.isWelcomeGreeting) {
       const modeHint = body.chatMode === 'recruiter' ? ' (Recruiter/Hiring mode)' : '';
       const prompt = `Generate a fresh, warm, 1-line Hindi/Hinglish welcome greeting (max 12 words) for "Vikash AI" (Personal Assistant of Vikash Kumar Gupta)${modeHint}. Today is ${ist.dateStr}, ${ist.timeStr}. No markdown, just 1 crisp friendly line.`;
 
-      const fastModels = getFastModelCandidates().slice(0, 3);
-      for (const model of fastModels) {
+      for (const model of models.slice(0, 3)) {
         try {
           const res = await fetchWithTimeout(
             `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -856,7 +743,7 @@ export default async (req) => {
                 generationConfig: { temperature: 0.95, maxOutputTokens: 55 }
               })
             },
-            3500
+            2500
           );
           if (res.ok) {
             const data = await res.json();
@@ -865,8 +752,6 @@ export default async (req) => {
               cachedWorkingModel = model;
               return jsonResponse(200, { success: true, welcome });
             }
-          } else if (res.status === 404 || res.status === 429) {
-            blockedModels.add(model);
           }
         } catch {}
       }
@@ -884,32 +769,26 @@ export default async (req) => {
       return jsonResponse(400, { success: false, isError: true, error: 'Empty message' });
     }
 
-    const historyArr = Array.isArray(body.history) ? body.history.slice(-8) : [];
-    const chatMode = body.chatMode || 'default';
     const detectedVisitorName = detectVisitorNameFromText(userMessage, body.visitorName);
     const { isHiringOrCollab } = detectIntentFlags(userMessage);
+    const intent = classifyUserIntent(userMessage, cachedGithub, cachedInstagram);
 
-    // 0ms Smart Intent Routing
-    const route = classifyIntent(userMessage, historyArr, chatMode);
-
-    // Only fetch the exact external API(s) required by this intent
+    // Fetch ONLY what this specific intent requires
     const [ghData, igData] = await Promise.all([
-      route.needsGithub ? fetchGitHubData() : Promise.resolve(cachedGithub),
-      route.needsInstagram ? fetchInstagramData() : Promise.resolve(cachedInstagram)
+      intent.needsGithub ? fetchGitHubData() : Promise.resolve(cachedGithub),
+      intent.needsInstagram ? fetchInstagramData() : Promise.resolve(cachedInstagram)
     ]);
 
-    // Trick 3: Background GitHub Cache Warmup on Casual Chat (non-blocking!)
-    let warmupPromise = null;
-    if (
-      route.intent === 'CASUAL_CHAT' &&
-      (!cachedGithub || Date.now() - cachedGithubAt >= 10 * 60 * 1000)
-    ) {
-      warmupPromise = fetchGitHubData().catch(() => null);
+    // Warm caches in background without blocking the response
+    if (intent.warmGithubInBg) {
+      fetchGitHubData().catch(() => {});
+    }
+    if (intent.warmInstagramInBg) {
+      fetchInstagramData().catch(() => {});
     }
 
     const socialLinks = getSocialLinks(ghData, igData);
-    const systemInstruction = buildModularSystemPrompt({
-      intent: route.intent,
+    const systemInstruction = buildSystemPrompt({
       customKnowledge: body.customKnowledge,
       ghData,
       igData,
@@ -917,13 +796,18 @@ export default async (req) => {
       clientDevice: body.clientDevice,
       ist,
       visitorName: detectedVisitorName,
-      chatMode
+      chatMode: body.chatMode || 'default',
+      intent
     });
 
+    const historyArr = Array.isArray(body.history) ? body.history.slice(-8) : [];
     const contents = buildValidGeminiContents(historyArr, userMessage);
-    const useSearch = route.needsSearch;
+    const useSearch = intent.wantsSearch;
+
     const actionButtons = selectContextActionButtons(userMessage, socialLinks);
-    const recommendedProjects = route.needsGithub ? selectRelevantProjects(userMessage, ghData) : [];
+    const recommendedProjects = intent.wantsProjectsOrCode
+      ? selectRelevantProjects(userMessage, ghData)
+      : [];
 
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
@@ -932,32 +816,26 @@ export default async (req) => {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
         };
 
-        // Immediate SSE heartbeat
+        // Immediate SSE heartbeat so connection stays instant
         controller.enqueue(encoder.encode(': ping\n\n'));
 
         let fullReply = '';
         let succeeded = false;
         const errors = [];
-        const triedModels = new Set();
-
-        const tryModelStream = async (model) => {
-          triedModels.add(model);
+        for (const model of models.slice(0, 6)) {
+          if (quotaBlockedModels.has(model)) continue;
           const attempts = useSearch ? [true, false] : [false];
           for (const withSearch of attempts) {
             try {
               const payload = {
                 systemInstruction: { parts: [{ text: systemInstruction }] },
                 contents,
-                generationConfig: {
-                  temperature: withSearch ? 0.3 : route.intent === 'CASUAL_CHAT' ? 0.7 : 0.6,
-                  maxOutputTokens: route.intent === 'CASUAL_CHAT' ? 280 : 900
-                }
+                generationConfig: { temperature: withSearch ? 0.3 : 0.6, maxOutputTokens: 900 }
               };
               if (withSearch) {
                 payload.tools = [{ google_search: {} }];
               }
 
-              // 8500ms timeout prevents premature AbortError on cold starts or search queries
               const gRes = await fetchWithTimeout(
                 `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`,
                 {
@@ -965,14 +843,13 @@ export default async (req) => {
                   headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
                   body: JSON.stringify(payload)
                 },
-                8500
+                5500
               );
 
               if (!gRes.ok || !gRes.body) {
                 const errTxt = await gRes.text().catch(() => '');
-                // Permanently block models returning 404 (retired/not found) or 429 (quota exhausted)
-                if (gRes.status === 404 || gRes.status === 429) {
-                  blockedModels.add(model);
+                if (gRes.status === 429) {
+                  quotaBlockedModels.add(model);
                 }
                 errors.push(`${model}[search=${withSearch}](${gRes.status}): ${errTxt.slice(0, 100)}`);
                 if (cachedWorkingModel === model) cachedWorkingModel = null;
@@ -1008,40 +885,19 @@ export default async (req) => {
 
               if (fullReply.trim().length > 0) {
                 cachedWorkingModel = model;
-                return true;
+                succeeded = true;
+                break;
               }
             } catch (err) {
               errors.push(`${model}[search=${withSearch}]: ${err?.message}`);
               if (cachedWorkingModel === model) cachedWorkingModel = null;
             }
           }
-          return false;
-        };
-
-        // Pass 1: Zero Pre-Flight Discovery — fire directly on active 2026 fast models
-        const fastCandidates = getFastModelCandidates().slice(0, 4);
-        for (const model of fastCandidates) {
-          if (blockedModels.has(model)) continue;
-          succeeded = await tryModelStream(model);
           if (succeeded) break;
         }
 
-        // Pass 2: Lazy Model Discovery ONLY if Pass 1 failed
         if (!succeeded) {
-          const discovered = await discoverGeminiModelsLazy(apiKey);
-          for (const model of discovered.slice(0, 4)) {
-            if (triedModels.has(model) || blockedModels.has(model)) continue;
-            succeeded = await tryModelStream(model);
-            if (succeeded) break;
-          }
-        }
-
-        // Pass 3: Non-streaming rescue fallback
-        if (!succeeded) {
-          const rescueModels = [...getFastModelCandidates(), ...(cachedModels || [])]
-            .filter((m) => !blockedModels.has(m))
-            .slice(0, 3);
-          for (const model of rescueModels) {
+          for (const model of models.slice(0, 2)) {
             try {
               const rescueRes = await fetchWithTimeout(
                 `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
@@ -1054,7 +910,7 @@ export default async (req) => {
                     generationConfig: { temperature: 0.6, maxOutputTokens: 900 }
                   })
                 },
-                6500
+                4500
               );
               if (rescueRes.ok) {
                 const rData = await rescueRes.json();
@@ -1066,8 +922,6 @@ export default async (req) => {
                   sendEvent({ type: 'delta', text: rescuedText });
                   break;
                 }
-              } else if (rescueRes.status === 404 || rescueRes.status === 429) {
-                blockedModels.add(model);
               }
             } catch {}
           }
@@ -1097,7 +951,6 @@ export default async (req) => {
         sendEvent({
           type: 'done',
           isError: false,
-          intent: route.intent,
           reply: fullReply,
           detectedVisitorName,
           showLeadCard: isHiringOrCollab,
@@ -1106,12 +959,6 @@ export default async (req) => {
           recommendedProjects,
           actionButtons
         });
-
-        // Give background warmup a brief window to settle if still running
-        if (warmupPromise) {
-          await Promise.race([warmupPromise, new Promise((r) => setTimeout(r, 150))]);
-        }
-
         controller.close();
       }
     });
