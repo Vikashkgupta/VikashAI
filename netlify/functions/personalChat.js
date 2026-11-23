@@ -535,25 +535,46 @@ async function saveChatTurnToSupabase({
   if (!sessionId) return { logged: false, reason: 'No sessionId' };
 
   const nowIso = new Date().toISOString();
-  const baseTurns = Array.isArray(history)
-    ? history
-        .filter((h) => h && h.text)
-        .slice(-16)
-        .map((h) => ({
-          role: h.role === 'user' ? 'user' : 'model',
-          text: String(h.text),
-          ts: nowIso
-        }))
-    : [];
+
+  // Laddu AI pattern: Read existing session row from Supabase first so `New Chat` or page refresh NEVER overwrites old messages!
+  const existingRes = await supabaseRequest(
+    `personal_chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=session_id,visitor_name,conversation,message_count`,
+    { method: 'GET' },
+    1800
+  );
+
+  const existingRow =
+    existingRes.ok && Array.isArray(existingRes.data) && existingRes.data.length > 0
+      ? existingRes.data[0]
+      : null;
+
+  const prevConv =
+    existingRow && Array.isArray(existingRow.conversation)
+      ? existingRow.conversation
+      : Array.isArray(history)
+      ? history
+          .filter((h) => h && h.text)
+          .slice(-16)
+          .map((h) => ({
+            role: h.role === 'user' ? 'user' : 'model',
+            text: String(h.text),
+            ts: nowIso
+          }))
+      : [];
 
   const updatedConv = [
-    ...baseTurns,
+    ...prevConv,
     { role: 'user', text: userMsg, ts: nowIso },
     { role: 'model', text: botReply, ts: nowIso }
-  ].slice(-40);
+  ];
 
-  const savedName = visitorName && visitorName !== 'Visitor' ? visitorName : 'Visitor';
-  const nextCount = Math.floor(updatedConv.length / 2);
+  const savedName =
+    visitorName && visitorName !== 'Visitor'
+      ? visitorName
+      : existingRow?.visitor_name || 'Visitor';
+
+  const prevCount = existingRow ? Number(existingRow.message_count || 0) : 0;
+  const nextCount = prevCount + 1;
 
   const writeRes = await supabaseRequest(
     'personal_chat_sessions?on_conflict=session_id',
@@ -570,7 +591,7 @@ async function saveChatTurnToSupabase({
         last_active: nowIso
       })
     },
-    1800
+    2000
   );
 
   if (!writeRes.ok) {
