@@ -1,9 +1,10 @@
 // File: netlify/functions/personalChat.js
 // Vikash AI — Personal Assistant Backend (Netlify Functions 2.0 Web-Standard SSE)
 // Features:
-// - 0ms Intent-Based Smart Routing (only calls GitHub, IG, Supabase Notes, or Search when needed)
+// - Laddu AI Engine: Dynamic Model Discovery (Cached 10 min) + Zero `thinkingConfig` Bug + Triple-Layer Rescue
+// - 0ms Intent-Based Smart Routing (only fetches GitHub, IG, Notes, or Search when needed)
 // - Date-Stamped Temporal Memory (`Saved on` date + `days ago` so past events are never confused with present)
-// - Active Gemini 3 / Flash-Lite models with `thinkingBudget: 0` & safe `buildValidGeminiContents`
+// - Zero Pre-Flight DB Blocking (instant stream start, saves turn to Supabase after completion)
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -72,7 +73,9 @@ function getISTDateTime() {
 function isSupportedTextModel(name) {
   const n = String(name || '').toLowerCase();
   if (notFoundModels.has(n) || quotaExhaustedModels.has(n)) return false;
-  if (/embedding|imagen|veo|aqa|tts|audio|robotics|learnlm|image|2\.0-|2\.5-|exp/i.test(n)) {
+  if (
+    /embedding|imagen|veo|aqa|tts|audio|robotics|learnlm|image|thinking|2\.0-|2\.5-pro|2\.5-flash|exp/i.test(n)
+  ) {
     return false;
   }
   return n.includes('gemini');
@@ -80,27 +83,28 @@ function isSupportedTextModel(name) {
 
 function rankModel(name) {
   const n = String(name || '').toLowerCase();
-  if (n === 'gemini-flash-latest') return 100;
-  if (n === 'gemini-3.1-flash-lite-preview') return 96;
-  if (n === 'gemini-3-flash-preview') return 92;
+  if (n.startsWith('gemini-3') && n.includes('flash-lite')) return 100;
+  if (n.startsWith('gemini-3') && n.includes('flash') && !n.includes('preview')) return 96;
+  if (n.startsWith('gemini-3') && n.includes('flash')) return 92;
   if (n === 'gemini-flash-lite-latest') return 88;
-  if (n.startsWith('gemini-3') && n.includes('flash-lite')) return 84;
-  if (n.startsWith('gemini-3') && n.includes('flash')) return 80;
+  if (n === 'gemini-flash-latest') return 85;
   return 50;
 }
 
 function getDefaultCandidateModels() {
   const base = [
+    'gemini-3.5-flash-lite',
+    'gemini-3.8-flash',
+    'gemini-flash-lite-latest',
     'gemini-flash-latest',
     'gemini-3.1-flash-lite-preview',
-    'gemini-3-flash-preview',
-    'gemini-flash-lite-latest'
+    'gemini-3-flash-preview'
   ].filter((m) => !quotaExhaustedModels.has(m) && !notFoundModels.has(m));
 
   const fallbackPool =
     base.length > 0
       ? base
-      : ['gemini-flash-latest', 'gemini-3.1-flash-lite-preview', 'gemini-3-flash-preview'];
+      : ['gemini-flash-lite-latest', 'gemini-flash-latest', 'gemini-3.1-flash-lite-preview'];
 
   if (cachedWorkingModel && !quotaExhaustedModels.has(cachedWorkingModel) && !notFoundModels.has(cachedWorkingModel)) {
     return [cachedWorkingModel, ...fallbackPool.filter((m) => m !== cachedWorkingModel)];
@@ -108,32 +112,44 @@ function getDefaultCandidateModels() {
   return fallbackPool;
 }
 
-async function refreshDiscoveredModelsInBackground(apiKey) {
+async function getCandidateModels(apiKey) {
   const now = Date.now();
-  if (cachedDiscoveredModels && now - cachedDiscoveredAt < 10 * 60 * 1000) return;
-  try {
-    const res = await fetchWithTimeout(
-      'https://generativelanguage.googleapis.com/v1beta/models',
-      { headers: { 'x-goog-api-key': apiKey } },
-      2500
-    );
-    if (!res.ok) return;
-    const data = await res.json();
-    const valid = (data.models || [])
-      .filter(
-        (m) =>
-          Array.isArray(m.supportedGenerationMethods) &&
-          m.supportedGenerationMethods.includes('generateContent')
-      )
-      .map((m) => m.name.replace(/^models\//, ''))
-      .filter(isSupportedTextModel)
-      .sort((a, b) => rankModel(b) - rankModel(a));
+  if (!cachedDiscoveredModels || now - cachedDiscoveredAt > 10 * 60 * 1000) {
+    try {
+      const res = await fetchWithTimeout(
+        'https://generativelanguage.googleapis.com/v1beta/models',
+        { headers: { 'x-goog-api-key': apiKey } },
+        1400
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const valid = (data.models || [])
+          .filter(
+            (m) =>
+              Array.isArray(m.supportedGenerationMethods) &&
+              m.supportedGenerationMethods.includes('generateContent')
+          )
+          .map((m) => m.name.replace(/^models\//, ''))
+          .filter(isSupportedTextModel)
+          .sort((a, b) => rankModel(b) - rankModel(a));
 
-    if (valid.length > 0) {
-      cachedDiscoveredModels = valid;
-      cachedDiscoveredAt = Date.now();
-    }
-  } catch {}
+        if (valid.length > 0) {
+          cachedDiscoveredModels = valid;
+          cachedDiscoveredAt = Date.now();
+        }
+      }
+    } catch {}
+  }
+
+  const pool =
+    cachedDiscoveredModels && cachedDiscoveredModels.length > 0
+      ? cachedDiscoveredModels.filter((m) => !quotaExhaustedModels.has(m) && !notFoundModels.has(m))
+      : getDefaultCandidateModels();
+
+  if (cachedWorkingModel && !quotaExhaustedModels.has(cachedWorkingModel) && !notFoundModels.has(cachedWorkingModel)) {
+    return [cachedWorkingModel, ...pool.filter((m) => m !== cachedWorkingModel)];
+  }
+  return pool.length > 0 ? pool : getDefaultCandidateModels();
 }
 
 function classifyUserIntent(message, chatMode = 'default') {
@@ -501,30 +517,14 @@ async function saveChatTurnToSupabase({
         }))
     : [];
 
-  const existing = await supabaseRequest(
-    `personal_chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=conversation,message_count,visitor_name`,
-    { method: 'GET' },
-    1800
-  );
-
-  const prevConv =
-    existing.ok && Array.isArray(existing.data?.[0]?.conversation)
-      ? existing.data[0].conversation
-      : baseTurns;
-
-  const savedName =
-    visitorName && visitorName !== 'Visitor'
-      ? visitorName
-      : existing.data?.[0]?.visitor_name || 'Visitor';
-
   const updatedConv = [
-    ...prevConv,
+    ...baseTurns,
     { role: 'user', text: userMsg, ts: nowIso },
     { role: 'model', text: botReply, ts: nowIso }
   ].slice(-40);
 
-  const nextCount =
-    (existing.ok ? Number(existing.data?.[0]?.message_count || 0) : Math.floor(baseTurns.length / 2)) + 1;
+  const savedName = visitorName && visitorName !== 'Visitor' ? visitorName : 'Visitor';
+  const nextCount = Math.floor(updatedConv.length / 2);
 
   const writeRes = await supabaseRequest(
     'personal_chat_sessions?on_conflict=session_id',
@@ -541,7 +541,7 @@ async function saveChatTurnToSupabase({
         last_active: nowIso
       })
     },
-    2200
+    1800
   );
 
   if (!writeRes.ok) {
@@ -758,30 +758,21 @@ function selectRelevantProjects(message, ghData, intent) {
 
 async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearch = false) {
   const cleanKey = String(apiKey || '').trim();
-  const models = cachedDiscoveredModels
-    ? cachedDiscoveredModels.filter((m) => !quotaExhaustedModels.has(m) && !notFoundModels.has(m))
-    : getDefaultCandidateModels();
+  const models = await getCandidateModels(cleanKey);
   const errors = [];
   const failedThisTurn = new Set();
 
-  for (const modelName of models.slice(0, 5)) {
+  for (const modelName of models.slice(0, 4)) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse`;
     const attempts = useSearch ? [true, false] : [false];
 
     for (const withSearch of attempts) {
-      const genConfig = {
-        temperature: withSearch ? 0.3 : 0.65,
-        maxOutputTokens: 700
-      };
-      // Only Gemini 3+ models accept thinkingConfig; sending it to flash-lite-latest causes HTTP 400!
-      if (modelName.startsWith('gemini-3')) {
-        genConfig.thinkingConfig = { thinkingBudget: 0 };
-      }
-
       const payload = {
         systemInstruction: { parts: [{ text: systemInstruction }] },
         contents,
-        generationConfig: genConfig
+        generationConfig: {
+          temperature: withSearch ? 0.25 : 0.55
+        }
       };
       if (withSearch) {
         payload.tools = [{ google_search: {} }];
@@ -798,7 +789,7 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
             },
             body: JSON.stringify(payload)
           },
-          withSearch ? 18000 : 12000
+          withSearch ? 12000 : 7500
         );
 
         if (res.ok && res.body) {
@@ -832,25 +823,18 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
     }
   }
 
-  refreshDiscoveredModelsInBackground(cleanKey);
   return { ok: false, errorText: errors.join(' | '), failedThisTurn };
 }
 
 async function callGeminiBufferedRescue(apiKey, systemInstruction, contents, skipModels = new Set()) {
   const cleanKey = String(apiKey || '').trim();
-  const models = getDefaultCandidateModels().filter((m) => !skipModels.has(m));
-  if (models.length === 0) return { ok: false, errorText: '' };
+  const allModels = await getCandidateModels(cleanKey);
+  const models = allModels.filter((m) => !skipModels.has(m));
+  const pool = models.length > 0 ? models : allModels;
   const errors = [];
 
-  for (const modelName of models.slice(0, 2)) {
+  for (const modelName of pool.slice(0, 3)) {
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
-    const genConfig = {
-      temperature: 0.65,
-      maxOutputTokens: 700
-    };
-    if (modelName.startsWith('gemini-3')) {
-      genConfig.thinkingConfig = { thinkingBudget: 0 };
-    }
 
     try {
       const res = await fetchWithTimeout(
@@ -864,10 +848,12 @@ async function callGeminiBufferedRescue(apiKey, systemInstruction, contents, ski
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: systemInstruction }] },
             contents,
-            generationConfig: genConfig
+            generationConfig: {
+              temperature: 0.55
+            }
           })
         },
-        10000
+        7500
       );
 
       if (res.ok) {
@@ -1166,10 +1152,20 @@ export default async (req) => {
           }
 
           if (!fullReply.trim()) {
-            const rescue = await callGeminiBufferedRescue(apiKey, systemInstruction, contents);
+            const skipSet = new Set(sseResult.failedThisTurn || []);
+            if (sseResult.modelUsed) skipSet.add(sseResult.modelUsed);
+            if (cachedWorkingModel === sseResult.modelUsed) cachedWorkingModel = null;
+
+            const rescue = await callGeminiBufferedRescue(apiKey, systemInstruction, contents, skipSet);
             if (rescue.ok && rescue.text) {
               fullReply = rescue.text;
               sendEvent({ type: 'delta', text: fullReply });
+            } else {
+              const rescueAny = await callGeminiBufferedRescue(apiKey, systemInstruction, contents);
+              if (rescueAny.ok && rescueAny.text) {
+                fullReply = rescueAny.text;
+                sendEvent({ type: 'delta', text: fullReply });
+              }
             }
           }
 
@@ -1177,7 +1173,7 @@ export default async (req) => {
             sendEvent({
               type: 'done',
               isError: true,
-              debugError: 'Empty stream output from Gemini',
+              debugError: `Empty stream from ${sseResult.modelUsed} and all rescue models failed`,
               reply: 'Something went wrong, please try again.'
             });
             controller.close();
