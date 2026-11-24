@@ -311,6 +311,7 @@ export default function App() {
   const audioPlayerRef = useRef(null);
   const audioCacheRef = useRef(new Map());
   const elevenLabsExhaustedRef = useRef(false);
+  const cachedVoicesRef = useRef([]);
   const [loadingAudioMsgId, setLoadingAudioMsgId] = useState(null);
 
   const tapCountRef = useRef(0);
@@ -479,6 +480,14 @@ export default function App() {
 
   useEffect(() => {
     detectGps(false);
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      const loadVoices = () => {
+        const list = window.speechSynthesis.getVoices() || [];
+        if (list.length > 0) cachedVoicesRef.current = list;
+      };
+      loadVoices();
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
   }, []);
 
   const getDeviceContext = async () => {
@@ -579,33 +588,70 @@ export default function App() {
         return;
       }
       window.speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(cleanText);
-      utter.lang = 'hi-IN';
 
-      // Prefer natural Male/Hindi voice if available on Chrome/Edge/Android
-      const voices = window.speechSynthesis.getVoices() || [];
-      const preferredVoice =
-        voices.find((v) => /madhur|prabhat|hemant|male/i.test(v.name) && /hi|in/i.test(v.lang)) ||
-        voices.find((v) => /hi-in/i.test(v.lang)) ||
-        voices.find((v) => /en-in/i.test(v.lang));
-      if (preferredVoice) utter.voice = preferredVoice;
+      const startSpeaking = (voiceList) => {
+        const utter = new SpeechSynthesisUtterance(cleanText);
+        const hasDevanagari = /[\u0900-\u097F]/.test(cleanText);
 
-      // Match emotion subtly in browser voice too
-      if (/माफ़|सॉरी|sorry|दुख|समस्या|दिक्कत|error/i.test(cleanText)) {
-        utter.rate = 0.92;
-        utter.pitch = 0.94;
-      } else if (/!|कमाल|शानदार|बधाई|awesome|happy|वाह/i.test(cleanText)) {
-        utter.rate = 1.06;
-        utter.pitch = 1.06;
+        // Priority 1: Indian Male Voices (Madhur, Prabhat, Ravi, Hemant)
+        // Priority 2: Google Hindi / Native hi-IN Voices
+        // Priority 3: Indian English Voices (Neerja, Heera, en-IN)
+        const indianMaleVoice = voiceList.find(
+          (v) =>
+            /madhur|prabhat|ravi|hemant|male/i.test(v.name) &&
+            (/hi|in/i.test(v.lang) || /india|hindi/i.test(v.name))
+        );
+        const hindiVoice = voiceList.find(
+          (v) => /hi-in/i.test(v.lang) || /hindi|हिन्दी/i.test(v.name)
+        );
+        const indianEnglishVoice = voiceList.find(
+          (v) => /en-in/i.test(v.lang) || /india|neerja|heera/i.test(v.name)
+        );
+
+        const chosenVoice = hasDevanagari
+          ? hindiVoice || indianMaleVoice || indianEnglishVoice
+          : indianMaleVoice || indianEnglishVoice || hindiVoice;
+
+        if (chosenVoice) {
+          utter.voice = chosenVoice;
+          utter.lang = chosenVoice.lang || (hasDevanagari ? 'hi-IN' : 'en-IN');
+        } else {
+          utter.lang = hasDevanagari ? 'hi-IN' : 'en-IN';
+        }
+
+        // Match emotion subtly in browser voice too
+        if (/माफ़|सॉरी|sorry|दुख|समस्या|दिक्कत|error/i.test(cleanText)) {
+          utter.rate = 0.92;
+          utter.pitch = 0.94;
+        } else if (/!|कमाल|शानदार|बधाई|awesome|happy|वाह/i.test(cleanText)) {
+          utter.rate = 1.04;
+          utter.pitch = 1.04;
+        } else {
+          utter.rate = 0.98;
+          utter.pitch = 0.98;
+        }
+
+        utter.onend = () => setSpeakingMsgId(null);
+        utter.onerror = () => setSpeakingMsgId(null);
+        setSpeakingMsgId(msgId);
+        window.speechSynthesis.speak(utter);
+      };
+
+      const available =
+        cachedVoicesRef.current.length > 0
+          ? cachedVoicesRef.current
+          : window.speechSynthesis.getVoices() || [];
+
+      if (available.length > 0) {
+        startSpeaking(available);
       } else {
-        utter.rate = 1.0;
-        utter.pitch = 1.0;
+        setSpeakingMsgId(msgId);
+        setTimeout(() => {
+          const retryVoices = window.speechSynthesis.getVoices() || [];
+          if (retryVoices.length > 0) cachedVoicesRef.current = retryVoices;
+          startSpeaking(retryVoices);
+        }, 120);
       }
-
-      utter.onend = () => setSpeakingMsgId(null);
-      utter.onerror = () => setSpeakingMsgId(null);
-      setSpeakingMsgId(msgId);
-      window.speechSynthesis.speak(utter);
     } catch {
       setSpeakingMsgId(null);
     }
