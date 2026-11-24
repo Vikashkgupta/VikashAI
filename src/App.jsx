@@ -1,6 +1,7 @@
 // File: src/App.jsx
 // Vikash AI — Personal Assistant (React + Tailwind CSS + Netlify Functions)
 import React, { useState, useEffect, useRef } from 'react';
+import { VIKASH_CUSTOM_KNOWLEDGE } from './data/customKnowledge';
 
 const VIKASH_AVATAR_URL = '/vikash.jpg';
 const LIVE_NETLIFY_SITE = 'https://vikashaiai.netlify.app';
