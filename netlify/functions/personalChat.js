@@ -1,11 +1,5 @@
 // File: netlify/functions/personalChat.js
 // Vikash AI — Personal Assistant Backend (Netlify Functions 2.0 Web-Standard SSE)
-// Features:
-// - Laddu AI Engine: Dynamic Model Discovery (Cached 10 min) + Diversified Multi-Family Failover
-// - Always-On Compact Core Identity (0ms overhead, ZERO hallucination about Vikash's bio/education/skills)
-// - 0ms Intent-Based Smart Routing for external APIs (GitHub, IG, Google Search only when needed)
-// - Date-Stamped Temporal Memory (`Saved on` date + `days ago`)
-// - Zero Pre-Flight DB Blocking (instant stream start, saves turn to Supabase after completion)
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -25,7 +19,6 @@ const notFoundModels = new Set([
   'gemini-2.5-flash-lite',
   'gemini-2.5-pro'
 ]);
-// Temporary cooldown map (45s) instead of permanent ban, since Gemini RPM resets every minute
 const quotaCooldownMap = new Map();
 
 function isModelCoolingDown(name) {
@@ -96,7 +89,6 @@ function isSupportedTextModel(name) {
   ) {
     return false;
   }
-  // Strictly allow only standard Gemini Flash chat models or Gemma-3 instruction models
   return (n.startsWith('gemini-') && n.includes('flash')) || n.startsWith('gemma-3-');
 }
 
@@ -231,7 +223,7 @@ function classifyUserIntent(message, chatMode = 'default') {
     !isGreetingOrShort &&
     !needsGitHub &&
     !needsInstagramStats &&
-    /news|ताज़ा|समाचार|खबर|weather|मौसम|temperature|trending|ट्रेंडिंग|cricket|match|score|ipl|price|stock|gold|latest|today|yesterday|आज|कल|search|इंटरनेट|google|who is|what is|kab hai|कब है/i.test(
+    /news|ताज़ा|समाचार|खबर|weather|मौसम|temperature|trending|ट्रेंडिंग|cricket|match|score|ipl|price|stock|gold|latest|today|yesterday|आज|कल|search|इंटरनेट|google|who is|what is|kab hai|कब है|\blink\b|लिंक|website|वेबसाइट|portal|university|ddu|dddugu/i.test(
       m
     );
 
@@ -536,7 +528,6 @@ async function saveChatTurnToSupabase({
 
   const nowIso = new Date().toISOString();
 
-  // Laddu AI pattern: Read existing session row from Supabase first so `New Chat` or page refresh NEVER overwrites old messages!
   const existingRes = await supabaseRequest(
     `personal_chat_sessions?session_id=eq.${encodeURIComponent(sessionId)}&select=session_id,visitor_name,conversation,message_count`,
     { method: 'GET' },
@@ -637,9 +628,9 @@ function buildModularSystemPrompt({
 }) {
   const lines = [
     `You are "Vikash AI" — a dual-capability AI: (1) a full-powered Universal AI Assistant, AND (2) the official Personal Assistant of Vikash Kumar Gupta.`,
-    `Style: Friendly, smart, natural Hinglish/Hindi (or English if user asks in English). Keep replies crisp and well-formatted.`,
-    `CAPABILITY 1 (UNIVERSAL GENERAL KNOWLEDGE): For ANY general world question (festivals like Diwali/Holi/Chhath dates, coding, study, science, GK, weather, news, math, or everyday advice), ALWAYS answer helpfully using your full general knowledge (and Google Search results when available). NEVER refuse general questions by saying you only know about Vikash!`,
-    `CAPABILITY 2 (STRICT ANTI-HALLUCINATION FOR VIKASH ONLY): ONLY when answering questions specifically about Vikash Kumar Gupta (his college, degree, schooling, skills, projects, DOB, marks, or personal life), strictly use the verified facts provided below. NEVER invent or guess details about Vikash. If a specific personal detail about Vikash is missing below, honestly say you don't have that exact info yet.`,
+    `Style: Friendly, smart, natural Hinglish/Hindi (or English if user asks in English). Keep replies crisp, complete, and well-formatted.`,
+    `CAPABILITY 1 (UNIVERSAL GENERAL KNOWLEDGE): For ANY general world question (websites/links like DDU Gorakhpur University / AKTU, festivals, coding, study, science, GK, weather, news, math, or everyday advice), ALWAYS answer helpfully using your full general knowledge and Google Search results when available. Write clean URLs like https://ddugu.ac.in/ directly.`,
+    `CAPABILITY 2 (STRICT ANTI-HALLUCINATION FOR VIKASH ONLY): ONLY when answering questions specifically about Vikash Kumar Gupta (his college, degree, schooling, skills, projects, DOB, marks, or personal life), strictly use the verified facts provided below. NEVER invent or guess details about Vikash.`,
     `CURRENT REAL-WORLD DATE & TIME (IST): ${ist.dateStr}, ${ist.timeStr}`
   ];
 
@@ -659,7 +650,6 @@ function buildModularSystemPrompt({
     );
   }
 
-  // Always include compact verified identity on every non-greeting query (0ms overhead, prevents hallucinations!)
   if (customKnowledge && (!intent.isGreetingOrShort || intent.needsAboutBio)) {
     lines.push(`ABOUT VIKASH (VERIFIED):\n${customKnowledge.aboutMe || ''}`);
     if (Array.isArray(customKnowledge.education)) {
@@ -752,7 +742,7 @@ function buildModularSystemPrompt({
   }
 
   lines.push(
-    `Keep answers concise, complete (never cut off mid-sentence), and under 140 words unless user asks for a detailed explanation. Never invent fake URLs or fake stats.`
+    `Always finish your thoughts/sentences completely (never cut off mid-sentence). Keep replies clear and concise.`
   );
   return lines.join('\n\n');
 }
@@ -840,14 +830,14 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
             { role: 'model', parts: [{ text: 'Understood.' }] },
             ...contents
           ],
-          generationConfig: { temperature: 0.45, maxOutputTokens: 1024 }
+          generationConfig: { temperature: 0.45, maxOutputTokens: 1500 }
         }
       : {
           systemInstruction: { parts: [{ text: systemInstruction }] },
           contents,
           generationConfig: {
             temperature: withSearch ? 0.25 : 0.45,
-            maxOutputTokens: 1024
+            maxOutputTokens: 1500
           }
         };
 
@@ -878,8 +868,8 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
       if (res.status === 404) {
         notFoundModels.add(modelName);
         failedThisTurn.add(modelName);
-      } else if (res.status === 429 && !withSearch) {
-        markModelCooldown(modelName, 45000);
+      } else if (res.status === 429) {
+        markModelCooldown(modelName, 60000);
         failedThisTurn.add(modelName);
       } else if (res.status === 503) {
         transient503Models.push(modelName);
@@ -899,25 +889,23 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
     }
   };
 
-  // Wave 1: Race Top-2 diversified models in parallel (whoever responds first wins!)
   const wave1 = models.slice(0, 2);
   if (wave1.length > 0) {
     try {
       const winner = await Promise.any(
-        wave1.map((m) => attemptSingleModel(m, useSearch && !m.includes('gemma'), useSearch ? 5500 : 3800))
+        wave1.map((m) => attemptSingleModel(m, useSearch && !m.includes('gemma'), useSearch ? 6000 : 4200))
       );
       return { ok: true, response: winner.response, modelUsed: winner.modelUsed, failedThisTurn };
     } catch {}
   }
 
-  // Wave 2: Race Backup Flash-Lite + Gemma-3-27b (without search so it never hits search 429!)
-  const wave2 = [...new Set([...models.slice(2, 4), 'gemma-3-27b-it', 'gemini-flash-lite-latest'])].filter(
-    (m) => !wave1.includes(m) && !notFoundModels.has(m) && !isModelCoolingDown(m)
+  const wave2 = [...new Set(['gemma-3-27b-it', 'gemma-3-12b-it', ...models.slice(2)])].filter(
+    (m) => !wave1.includes(m) && !failedThisTurn.has(m) && !notFoundModels.has(m) && !isModelCoolingDown(m)
   );
   if (wave2.length > 0) {
     try {
       const winner2 = await Promise.any(
-        wave2.slice(0, 3).map((m) => attemptSingleModel(m, false, 4200))
+        wave2.slice(0, 3).map((m) => attemptSingleModel(m, false, 5000))
       );
       return { ok: true, response: winner2.response, modelUsed: winner2.modelUsed, failedThisTurn };
     } catch {}
@@ -929,10 +917,15 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
 async function callGeminiBufferedRescue(apiKey, systemInstruction, contents, skipModels = new Set()) {
   const cleanKey = String(apiKey || '').trim();
   const allModels = await getCandidateModels(cleanKey);
-  const prioritizedPool = [...new Set(['gemma-3-27b-it', ...allModels])].filter(
+  const prioritizedPool = [
+    ...new Set(['gemma-3-27b-it', 'gemma-3-12b-it', ...allModels])
+  ].filter(
     (m) => !skipModels.has(m) && !notFoundModels.has(m) && !isModelCoolingDown(m)
   );
-  const pool = prioritizedPool.length > 0 ? prioritizedPool : ['gemma-3-27b-it', 'gemini-flash-latest'];
+  const pool =
+    prioritizedPool.length > 0
+      ? prioritizedPool
+      : ['gemma-3-27b-it', 'gemma-3-12b-it', 'gemini-flash-latest'];
   const errors = [];
 
   for (const modelName of pool.slice(0, 3)) {
@@ -945,12 +938,12 @@ async function callGeminiBufferedRescue(apiKey, systemInstruction, contents, ski
             { role: 'model', parts: [{ text: 'Understood.' }] },
             ...contents
           ],
-          generationConfig: { temperature: 0.45, maxOutputTokens: 1024 }
+          generationConfig: { temperature: 0.45, maxOutputTokens: 1500 }
         }
       : {
           systemInstruction: { parts: [{ text: systemInstruction }] },
           contents,
-          generationConfig: { temperature: 0.45, maxOutputTokens: 1024 }
+          generationConfig: { temperature: 0.45, maxOutputTokens: 1500 }
         };
 
     try {
@@ -964,7 +957,7 @@ async function callGeminiBufferedRescue(apiKey, systemInstruction, contents, ski
           },
           body: JSON.stringify(payload)
         },
-        6500
+        7500
       );
 
       if (res.ok) {
@@ -1313,7 +1306,7 @@ export default async (req) => {
               }
             }
           }
-          // Send `done` to user FIRST (Laddu AI pattern) so UI finishes instantly without waiting on Supabase!
+
           sendEvent({
             type: 'done',
             isError: false,

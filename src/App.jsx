@@ -1,17 +1,6 @@
 // File: src/App.jsx
 // Vikash AI — Personal Assistant (React + Tailwind CSS + Netlify Functions)
-// Features:
-// - Mic button on the LEFT side of input bar (never blocked by Netlify badge on phone/tablet)
-// - Send locked while streaming + Stop (■) button to abort response mid-stream
-// - Subtle normal-sized 3 bouncing dots (`w-1.5 h-1.5`)
-// - Top-right 3-dots button cleanly commented out for future buttons
-// - Smart Auto-Scroll lock & Recruiter Mode (`?mode=recruiter`)
-// - Admin Monitoring Dashboard with 2 Tabs:
-//   1. `Analytics`: Search, Active Now dot, Top Topics, Click-to-Expand Full History, Copy & Delete
-//   2. `My Knowledge`: Voice-to-Text (`🎤 Speak`) + Manual Edit Textarea + Category + Save/Edit/Delete in Supabase (`vikash_custom_notes`) — NEVER auto-sends on speech!
-
 import React, { useState, useEffect, useRef } from 'react';
-import { VIKASH_CUSTOM_KNOWLEDGE } from './data/customKnowledge';
 
 const VIKASH_AVATAR_URL = '/vikash.jpg';
 const LIVE_NETLIFY_SITE = 'https://vikashaiai.netlify.app';
@@ -22,6 +11,25 @@ const API_BASE =
     : '';
 const CHAT_API = `${API_BASE}/.netlify/functions/personalChat`;
 const ADMIN_API = `${API_BASE}/.netlify/functions/adminDashboard`;
+
+const DEFAULT_CUSTOM_KNOWLEDGE = {
+  aboutMe:
+    'नाम: Vikash Kumar Gupta (विकास कुमार गुप्ता) | भूमिका: Full-Stack Web Developer & AI Builder | शहर: Mairwa (Siwan), Bihar, India',
+  skills: [
+    'React.js',
+    'JavaScript (ES6+)',
+    'Tailwind CSS',
+    'Node.js & Netlify Functions',
+    'Supabase (PostgreSQL)',
+    'Gemini AI & REST APIs'
+  ],
+  highlights: [
+    'KshirSagar Sweets Corner के लिए फुल-स्टैक वेब ऐप और AI असिस्टेंट बनाया।',
+    'GitHub और Instagram Graph API से जुड़ा लाइव पर्सनल AI असिस्टेंट बनाया।'
+  ],
+  extraNotes:
+    'नए टेक आइडियाज़, वेब ऐप्स और AI प्रोजेक्ट्स पर काम करने के लिए हमेशा तैयार।'
+};
 
 const INITIAL_CHIPS = [
   '🚀 Vikash के प्रोजेक्ट्स दिखाओ',
@@ -104,37 +112,55 @@ function ActionChipIcon({ type }) {
 }
 
 function renderInlineMarkdown(rawText) {
-  const placeholders = [];
-  const withMd = String(rawText || '').replace(
-    /\[([^\]]+)\]\((https?:\/\/[^\s)]+|tel:[^\s)]+)\)/g,
-    (_, label, url) => {
-      const idx = placeholders.length;
-      placeholders.push({ label, url });
-      return `__LINK_${idx}__`;
+  // Strip any accidental internal placeholder tokens if ever present
+  const sanitizedInput = String(rawText || '').replace(/__(?:MD)?LINK_\d+__/g, '');
+  const tokens = [];
+
+  const pushToken = (label, url) => {
+    const cleanUrl = String(url || '').trim().replace(/[.,!?;:]+$/, '');
+    if (!cleanUrl) return label;
+    const href = /^https?:\/\//i.test(cleanUrl) || cleanUrl.startsWith('tel:')
+      ? cleanUrl
+      : `https://${cleanUrl}`;
+    const idx = tokens.length;
+    tokens.push({ label: label || cleanUrl, href });
+    return `[[LINKTOKEN_${idx}]]`;
+  };
+
+  // 1. Markdown links [label](url)
+  const step1 = sanitizedInput.replace(
+    /\[([^\]]+)\]\(((?:https?:\/\/|tel:)[^\s)]+)\)/g,
+    (_, label, url) => pushToken(label, url)
+  );
+
+  // 2. Full https:// or http:// URLs
+  const step2 = step1.replace(/(https?:\/\/[^\s<>"')\]]+)/g, (url) => {
+    const cleaned = url.replace(/[.,!?;:]+$/, '');
+    const trailing = url.slice(cleaned.length);
+    return `${pushToken(cleaned, cleaned)}${trailing}`;
+  });
+
+  // 3. Domain-like links such as ddugu.ac.in or aktu.ac.in
+  const step3 = step2.replace(
+    /(?<![\w@/.])([a-z0-9-]+(?:\.[a-z0-9-]+)+\.(?:ac\.in|edu\.in|gov\.in|org\.in|com|in|org|net|io|ai)(?:\/[^\s<>"')\]]*)?)/gi,
+    (domainUrl) => {
+      const cleaned = domainUrl.replace(/[.,!?;:]+$/, '');
+      const trailing = domainUrl.slice(cleaned.length);
+      return `${pushToken(cleaned, cleaned)}${trailing}`;
     }
   );
 
-  const cleanedUrlText = withMd.replace(/(https?:\/\/[^\s<>"')\]]+)\s+([a-zA-Z0-9_.-]+)/g, '$1$2');
-
-  const withBare = cleanedUrlText.replace(/(https?:\/\/[^\s<>"')\]]+)/g, (url) => {
-    const cleaned = url.replace(/[.,!?;:]+$/, '');
-    const trailing = url.slice(cleaned.length);
-    const idx = placeholders.length;
-    placeholders.push({ label: cleaned, url: cleaned });
-    return `__LINK_${idx}__${trailing}`;
-  });
-
-  const parts = withBare.split(/(__LINK_\d+__|\*\*[^*]+\*\*)/g);
+  const parts = step3.split(/(\[\[LINKTOKEN_\d+\]\]|\*\*[^*]+\*\*)/g);
   return parts.map((part, i) => {
-    const linkMatch = part.match(/^__LINK_(\d+)__$/);
+    const linkMatch = part.match(/^\[\[LINKTOKEN_(\d+)\]\]$/);
     if (linkMatch) {
-      const item = placeholders[Number(linkMatch[1])];
+      const item = tokens[Number(linkMatch[1])];
       if (!item) return null;
-      const isTel = item.url.startsWith('tel:');
+      const isTel = item.href.startsWith('tel:');
       return (
         <a
           key={i}
-          href={item.url}
+          href={item.href}
           target={isTel ? undefined : '_blank'}
           rel={isTel ? undefined : 'noopener noreferrer'}
           className="text-blue-600 hover:text-blue-700 underline underline-offset-2 font-medium break-all"
@@ -281,7 +307,6 @@ export default function App() {
   const messagesEndRef = useRef(null);
   const userScrolledUpRef = useRef(false);
 
-  // Secret 5-tap Admin Monitoring Dashboard state
   const tapCountRef = useRef(0);
   const tapTimerRef = useRef(null);
   const [showAdminModal, setShowAdminModal] = useState(() => {
@@ -296,11 +321,10 @@ export default function App() {
   const [adminLoading, setAdminLoading] = useState(false);
   const [adminError, setAdminError] = useState('');
   const [adminData, setAdminData] = useState(null);
-  const [adminTab, setAdminTab] = useState('analytics'); // 'analytics' | 'knowledge'
+  const [adminTab, setAdminTab] = useState('analytics');
   const [adminSearch, setAdminSearch] = useState('');
   const [expandedSessionId, setExpandedSessionId] = useState(null);
 
-  // Live Knowledge Manager (Voice-to-Text -> Edit -> Save to Supabase)
   const [noteCategory, setNoteCategory] = useState('Project / Update');
   const [noteDraft, setNoteDraft] = useState('');
   const [editingNoteId, setEditingNoteId] = useState(null);
@@ -837,7 +861,6 @@ export default function App() {
     showToast('Chat transcript copied!');
   };
 
-  // Voice-to-Text for Knowledge Box (Appends to textarea — NEVER auto-sends so you can fix typos first!)
   const handleDictateNote = () => {
     try {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -949,7 +972,6 @@ export default function App() {
         </div>
       )}
 
-      {/* 1. TOP HEADER (5-Tap on Logo opens Admin Dashboard) */}
       <header className="flex-none flex items-center justify-between px-3 sm:px-5 py-3 bg-white border-b border-neutral-100 z-20">
         <div
           onClick={handleSecretLogoTap}
@@ -997,23 +1019,9 @@ export default function App() {
               />
             </svg>
           </button>
-
-          {/* Top-right 3-dots menu commented out as requested (will add custom buttons later)
-          <button
-            type="button"
-            onClick={() => {}}
-            className="w-9 h-9 rounded-full flex items-center justify-center text-neutral-600 hover:bg-neutral-100 active:bg-neutral-200 transition-colors"
-            title="विकल्प"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" />
-            </svg>
-          </button>
-          */}
         </div>
       </header>
 
-      {/* 2. CHAT FEED */}
       <main
         ref={mainScrollRef}
         onScroll={handleFeedScroll}
@@ -1241,7 +1249,6 @@ export default function App() {
         <div ref={messagesEndRef} />
       </main>
 
-      {/* 3. BOTTOM INPUT DOCK (Mic on LEFT, Input in CENTER, Send / Stop on RIGHT) */}
       <footer className="flex-none px-3 sm:px-4 pt-2 pb-4 bg-white max-w-3xl w-full mx-auto">
         <form
           onSubmit={(e) => {
@@ -1316,7 +1323,6 @@ export default function App() {
         </form>
       </footer>
 
-      {/* PRIVATE ADMIN MONITORING DASHBOARD (Analytics + Voice/Edit Live Knowledge Manager) */}
       {showAdminModal && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-3 sm:p-5">
           <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl border border-neutral-200 max-h-[90dvh] flex flex-col overflow-hidden">
@@ -1336,7 +1342,6 @@ export default function App() {
               </button>
             </div>
 
-            {/* Tab Switcher when unlocked */}
             {adminAuthorized && (
               <div className="flex border-b border-neutral-100 px-5 pt-2 gap-2 bg-neutral-50/60">
                 <button
@@ -1392,7 +1397,6 @@ export default function App() {
                   </button>
                 </form>
               ) : adminTab === 'knowledge' ? (
-                /* ================= TAB 2: VOICE + MANUAL EDIT + SAVE TO SUPABASE ================= */
                 <div className="space-y-4">
                   <form
                     onSubmit={handleSaveNoteToSupabase}
@@ -1472,7 +1476,6 @@ export default function App() {
                     </div>
                   </form>
 
-                  {/* Saved Notes List */}
                   <div className="space-y-2">
                     <h3 className="text-xs font-semibold text-neutral-700">
                       Saved Live Knowledge Notes ({(adminData?.customNotes || []).length})
@@ -1519,7 +1522,6 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                /* ================= TAB 1: VISITOR ANALYTICS & CLICK-TO-EXPAND HISTORY ================= */
                 <>
                   <div className="flex flex-wrap gap-2">
                     {Object.entries(adminData?.integrations || {}).map(([name, ok]) => (
