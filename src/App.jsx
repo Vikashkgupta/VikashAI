@@ -12,6 +12,7 @@ const API_BASE =
     : '';
 const CHAT_API = `${API_BASE}/.netlify/functions/personalChat`;
 const ADMIN_API = `${API_BASE}/.netlify/functions/adminDashboard`;
+const TTS_API = `${API_BASE}/.netlify/functions/tts`;
 
 const DEFAULT_CUSTOM_KNOWLEDGE = {
   aboutMe:
@@ -307,6 +308,10 @@ export default function App() {
   const mainScrollRef = useRef(null);
   const messagesEndRef = useRef(null);
   const userScrolledUpRef = useRef(false);
+  const audioPlayerRef = useRef(null);
+  const audioCacheRef = useRef(new Map());
+  const elevenLabsExhaustedRef = useRef(false);
+  const [loadingAudioMsgId, setLoadingAudioMsgId] = useState(null);
 
   const tapCountRef = useRef(0);
   const tapTimerRef = useRef(null);
@@ -551,28 +556,123 @@ export default function App() {
     }
   };
 
-  const handleSpeakMessage = (msgId, text) => {
+  const stopAllAudio = () => {
+    try {
+      if (audioPlayerRef.current) {
+        audioPlayerRef.current.pause();
+        audioPlayerRef.current.currentTime = 0;
+        audioPlayerRef.current = null;
+      }
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    } catch {}
+    setSpeakingMsgId(null);
+    setLoadingAudioMsgId(null);
+  };
+
+  const speakWithBrowserFallback = (msgId, cleanText) => {
     try {
       if (!('speechSynthesis' in window)) {
         showToast('इस ब्राउज़र में वॉइस रीडिंग उपलब्ध नहीं है');
-        return;
-      }
-      if (speakingMsgId === msgId) {
-        window.speechSynthesis.cancel();
         setSpeakingMsgId(null);
         return;
       }
       window.speechSynthesis.cancel();
-      const clean = String(text || '').replace(/https?:\/\/\S+/g, '').replace(/[*_#`~]/g, '').trim();
-      if (!clean) return;
-      const utter = new SpeechSynthesisUtterance(clean);
+      const utter = new SpeechSynthesisUtterance(cleanText);
       utter.lang = 'hi-IN';
+
+      // Prefer natural Male/Hindi voice if available on Chrome/Edge/Android
+      const voices = window.speechSynthesis.getVoices() || [];
+      const preferredVoice =
+        voices.find((v) => /madhur|prabhat|hemant|male/i.test(v.name) && /hi|in/i.test(v.lang)) ||
+        voices.find((v) => /hi-in/i.test(v.lang)) ||
+        voices.find((v) => /en-in/i.test(v.lang));
+      if (preferredVoice) utter.voice = preferredVoice;
+
+      // Match emotion subtly in browser voice too
+      if (/माफ़|सॉरी|sorry|दुख|समस्या|दिक्कत|error/i.test(cleanText)) {
+        utter.rate = 0.92;
+        utter.pitch = 0.94;
+      } else if (/!|कमाल|शानदार|बधाई|awesome|happy|वाह/i.test(cleanText)) {
+        utter.rate = 1.06;
+        utter.pitch = 1.06;
+      } else {
+        utter.rate = 1.0;
+        utter.pitch = 1.0;
+      }
+
       utter.onend = () => setSpeakingMsgId(null);
       utter.onerror = () => setSpeakingMsgId(null);
       setSpeakingMsgId(msgId);
       window.speechSynthesis.speak(utter);
     } catch {
       setSpeakingMsgId(null);
+    }
+  };
+
+  const handleSpeakMessage = async (msgId, text) => {
+    const isCurrentlyActive = speakingMsgId === msgId || loadingAudioMsgId === msgId;
+    stopAllAudio();
+    if (isCurrentlyActive) return;
+
+    const clean = String(text || '')
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/[*_#`~>•]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!clean) return;
+
+    // 1. Play instantly from memory cache (0ms, 0 extra characters spent!)
+    const cachedBlobUrl = audioCacheRef.current.get(clean);
+    if (cachedBlobUrl) {
+      const audio = new Audio(cachedBlobUrl);
+      audioPlayerRef.current = audio;
+      setSpeakingMsgId(msgId);
+      audio.onended = () => setSpeakingMsgId(null);
+      audio.onerror = () => speakWithBrowserFallback(msgId, clean);
+      audio.play().catch(() => speakWithBrowserFallback(msgId, clean));
+      return;
+    }
+
+    // 2. If 10,000 monthly quota already ended in this session, go straight to 0ms browser voice
+    if (elevenLabsExhaustedRef.current) {
+      speakWithBrowserFallback(msgId, clean);
+      return;
+    }
+
+    // 3. Try Custom Cloned Voice (ElevenLabs) first -> auto-fallback to browser voice on quota limit
+    try {
+      setLoadingAudioMsgId(msgId);
+      const res = await fetch(TTS_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: clean })
+      });
+
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.includes('audio/mpeg')) {
+        elevenLabsExhaustedRef.current = true;
+        setLoadingAudioMsgId(null);
+        speakWithBrowserFallback(msgId, clean);
+        return;
+      }
+
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      audioCacheRef.current.set(clean, blobUrl);
+
+      setLoadingAudioMsgId(null);
+      const audio = new Audio(blobUrl);
+      audioPlayerRef.current = audio;
+      setSpeakingMsgId(msgId);
+      audio.onended = () => setSpeakingMsgId(null);
+      audio.onerror = () => speakWithBrowserFallback(msgId, clean);
+      await audio.play();
+    } catch {
+      setLoadingAudioMsgId(null);
+      speakWithBrowserFallback(msgId, clean);
     }
   };
 
@@ -1116,11 +1216,18 @@ export default function App() {
                         type="button"
                         onClick={() => handleSpeakMessage(msg.id, msg.text)}
                         className={`p-1.5 rounded-lg hover:bg-neutral-100 transition-colors ${
-                          speakingMsgId === msg.id ? 'text-neutral-900' : 'text-neutral-400 hover:text-neutral-800'
+                          speakingMsgId === msg.id || loadingAudioMsgId === msg.id
+                            ? 'text-neutral-900'
+                            : 'text-neutral-400 hover:text-neutral-800'
                         }`}
                         aria-label={speakingMsgId === msg.id ? 'Stop' : 'Speak'}
                       >
-                        {speakingMsgId === msg.id ? (
+                        {loadingAudioMsgId === msg.id ? (
+                          <svg className="w-4 h-4 animate-spin text-neutral-700" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                          </svg>
+                        ) : speakingMsgId === msg.id ? (
                           <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
                             <rect x="6" y="6" width="12" height="12" rx="2" />
                           </svg>
