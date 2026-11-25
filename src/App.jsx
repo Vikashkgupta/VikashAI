@@ -599,8 +599,8 @@ export default function App() {
 
           const source = ctx.createMediaElementSource(audio);
           const sr = ctx.sampleRate;
-          const bufferTime = 0.055; // 65ms window -> crisp speech, zero echo
-          const pitchRatio = 0.85; // ~ -4.3 semitones (natural male pitch without slowing down)
+          const bufferTime = 0.055; // 55ms window -> crisp, clear youthful speech
+          const pitchRatio = 0.85; // ~ -2.8 semitones (natural 22yo young male pitch, not overly heavy)
           const modDepth = bufferTime * (1 - pitchRatio);
           const N = Math.max(128, Math.floor(sr * bufferTime));
 
@@ -647,16 +647,16 @@ export default function App() {
           gain1.gain.value = 0;
           gain2.gain.value = 0;
 
-          // Subtle chest-resonance EQ for warm, natural male tone
+          // Light natural warmth & crisp clarity for a 22-year-old male voice (no heavy boom)
           const lowShelf = ctx.createBiquadFilter();
           lowShelf.type = 'lowshelf';
-          lowShelf.frequency.value = 200;
-          lowShelf.gain.value = 3.5;
+          lowShelf.frequency.value = 180;
+          lowShelf.gain.value = 1.5;
 
           const highShelf = ctx.createBiquadFilter();
           highShelf.type = 'highshelf';
-          highShelf.frequency.value = 4500;
-          highShelf.gain.value = -2.5;
+          highShelf.frequency.value = 5000;
+          highShelf.gain.value = -0.8;
 
           source.connect(delay1);
           source.connect(delay2);
