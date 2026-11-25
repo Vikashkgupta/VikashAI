@@ -199,6 +199,32 @@ function prepareTextForHindiTTS(text) {
     .replace(/\bAI\b/g, 'ए आई')
     .replace(/\b([a-zA-Z]+)\b/g, (word) => HINGLISH_TO_HINDI_MAP[word.toLowerCase()] || word);
 }
+
+async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+  try {
+    const res = await fetch('https://api.fish.audio/v1/tts', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        model: 's1'
+      },
+      body: JSON.stringify({
+        text,
+        reference_id: voiceId,
+        format: 'mp3',
+        mp3_bitrate: 128,
+        latency: 'normal',
+        temperature: tone.temperature,
+        top_p: tone.topP,
+        prosody: {
+          speed: tone.fishSpeed,
+          volume: tone.fishVolume
+        }
       })
     });
     clearTimeout(timeoutId);
