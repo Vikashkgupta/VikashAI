@@ -90,32 +90,115 @@ function shapeConversationalText(raw) {
   return clean;
 }
 
-async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8500);
+const HINGLISH_TO_HINDI_MAP = {
+  namaste: 'नमस्ते',
+  main: 'मैं',
+  mai: 'मैं',
+  hoon: 'हूँ',
+  hu: 'हूँ',
+  hai: 'है',
+  hain: 'हैं',
+  ho: 'हो',
+  kaise: 'कैसे',
+  kaisa: 'कैसा',
+  kaisi: 'कैसी',
+  kya: 'क्या',
+  kyu: 'क्यों',
+  kyun: 'क्यों',
+  kaun: 'कौन',
+  kahan: 'कहाँ',
+  kab: 'कब',
+  karu: 'करूँ',
+  karoon: 'करूँ',
+  kar: 'कर',
+  karo: 'करो',
+  karna: 'करना',
+  karte: 'करते',
+  aap: 'आप',
+  aapka: 'आपका',
+  aapki: 'आपकी',
+  aapke: 'आपके',
+  aapko: 'आपको',
+  mera: 'मेरा',
+  meri: 'मेरी',
+  mere: 'मेरे',
+  mujhe: 'मुझे',
+  tum: 'तुम',
+  tumhara: 'तुम्हारा',
+  hum: 'हम',
+  hamara: 'हमारा',
+  aur: 'और',
+  ya: 'या',
+  lekin: 'लेकिन',
+  par: 'पर',
+  toh: 'तो',
+  to: 'तो',
+  bhi: 'भी',
+  hi: 'ही',
+  nahi: 'नहीं',
+  nhi: 'नहीं',
+  haan: 'हाँ',
+  ji: 'जी',
+  bhai: 'भाई',
+  yaar: 'यार',
+  arey: 'अरे',
+  are: 'अरे',
+  achha: 'अच्छा',
+  accha: 'अच्छा',
+  theek: 'ठीक',
+  thik: 'ठीक',
+  batao: 'बताओ',
+  bataiye: 'बताइए',
+  bataye: 'बताएँ',
+  jaanna: 'जानना',
+  janna: 'जानना',
+  baare: 'बारे',
+  bare: 'बारे',
+  mein: 'में',
+  me: 'में',
+  se: 'से',
+  ko: 'को',
+  ka: 'का',
+  ki: 'की',
+  ke: 'के',
+  liye: 'लिए',
+  saath: 'साथ',
+  sath: 'साथ',
+  yeh: 'यह',
+  ye: 'ये',
+  woh: 'वह',
+  wo: 'वो',
+  abhi: 'अभी',
+  aaj: 'आज',
+  kal: 'कल',
+  bahut: 'बहुत',
+  thoda: 'थोड़ा',
+  sab: 'सब',
+  kuch: 'कुछ',
+  kuchh: 'कुछ',
+  madad: 'मदद',
+  vikash: 'विकास',
+  vikas: 'विकास',
+  gupta: 'गुप्ता',
+  kumar: 'कुमार'
+};
 
-  try {
-    const res = await fetch('https://api.fish.audio/v1/tts', {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        model: 's1'
-      },
-      body: JSON.stringify({
-        text,
-        reference_id: voiceId,
-        format: 'mp3',
-        mp3_bitrate: 128,
-        normalize: true,
-        latency: 'balanced',
-        temperature: tone.temperature,
-        top_p: tone.topP,
-        prosody: {
-          speed: tone.fishSpeed,
-          volume: tone.fishVolume
-        }
+function detectHindiOrHinglish(text) {
+  if (/[\u0900-\u097F]/.test(text)) return true;
+  const words = String(text || '').toLowerCase().match(/\b[a-z]+\b/g) || [];
+  let hits = 0;
+  for (const w of words) {
+    if (HINGLISH_TO_HINDI_MAP[w]) hits += 1;
+    if (hits >= 2) return true;
+  }
+  return false;
+}
+
+function prepareTextForHindiTTS(text) {
+  return String(text || '')
+    .replace(/\bAI\b/g, 'ए आई')
+    .replace(/\b([a-zA-Z]+)\b/g, (word) => HINGLISH_TO_HINDI_MAP[word.toLowerCase()] || word);
+}
       })
     });
     clearTimeout(timeoutId);
@@ -131,7 +214,11 @@ async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
 }
 
 async function synthesizeHindiNeuralStream(text) {
-  const sentences = text
+  const isHindi = detectHindiOrHinglish(text);
+  const langCode = isHindi ? 'hi' : 'en';
+  const preparedText = isHindi ? prepareTextForHindiTTS(text) : text;
+
+  const sentences = preparedText
     .split(/(?<=[।.!?])\s+/)
     .map((s) => s.trim())
     .filter(Boolean);
@@ -169,7 +256,7 @@ async function synthesizeHindiNeuralStream(text) {
   try {
     const buffers = await Promise.all(
       limitedChunks.map(async (part) => {
-        const url = `https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=hi&q=${encodeURIComponent(
+        const url = `https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=${langCode}&q=${encodeURIComponent(
           part
         )}`;
         const res = await fetch(url, {

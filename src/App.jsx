@@ -719,21 +719,12 @@ export default function App() {
         return;
       }
 
-      // Only prefer native browser voice if it is a TRUE Hindi Male voice (Madhur/Hemant), NEVER en-IN (Ravi/Prabhat)!
-      const hasTrueHindiMale = (cachedVoicesRef.current || []).some(
-        (v) => /hi-in/i.test(v.lang) && /madhur|hemant/i.test(v.name)
-      );
-      if (voiceSource === 'hindi-neural-fallback' && hasTrueHindiMale) {
-        setLoadingAudioMsgId(null);
-        speakWithBrowserFallback(msgId, clean);
-        return;
-      }
-
       const blob = await res.blob();
       const blobUrl = URL.createObjectURL(blob);
       const finalRate = voiceSource === 'fish-audio-custom' ? 1.0 : playbackRate;
       audioCacheRef.current.set(clean, { url: blobUrl, rate: finalRate });
 
+      console.info('[Vikash AI TTS]:', voiceSource || 'server-audio', '| rate:', finalRate);
       setLoadingAudioMsgId(null);
       const audio = new Audio(blobUrl);
       audio.playbackRate = finalRate;
