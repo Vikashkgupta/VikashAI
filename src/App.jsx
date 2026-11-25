@@ -575,8 +575,9 @@ export default function App() {
 
   /**
    * Plays server audio with exact same speed & emotion, applying a zero-click
-   * Hann-windowed Web Audio pitch-down (-4.3 semitones) + warm vocal EQ for Male voice
-   * whenever using the free neural fallback (bypassed for Fish Audio custom voice).
+   * Hann-windowed Web Audio pitch-shift + crisp vocal EQ for a confident
+   * 22-year-old male tone whenever using the free neural fallback
+   * (bypassed automatically for Fish Audio custom voice).
    */
   const playServerAudio = async (blobUrl, rate, applyMaleShift, msgId, cleanText) => {
     cleanupPitchNodes();
@@ -599,8 +600,8 @@ export default function App() {
 
           const source = ctx.createMediaElementSource(audio);
           const sr = ctx.sampleRate;
-          const bufferTime = 0.055; // 55ms window -> crisp, clear youthful speech
-          const pitchRatio = 0.85; // ~ -2.8 semitones (natural 22yo young male pitch, not overly heavy)
+          const bufferTime = 0.048; // 48ms window -> crisp, zero-echo clarity
+          const pitchRatio = 0.82; // Confident, natural young male tone (22-25yo)
           const modDepth = bufferTime * (1 - pitchRatio);
           const N = Math.max(128, Math.floor(sr * bufferTime));
 
@@ -647,16 +648,16 @@ export default function App() {
           gain1.gain.value = 0;
           gain2.gain.value = 0;
 
-          // Light natural warmth & crisp clarity for a 22-year-old male voice (no heavy boom)
+          // Natural chest warmth + crisp presence for clear, fresh male vocal tone
           const lowShelf = ctx.createBiquadFilter();
           lowShelf.type = 'lowshelf';
-          lowShelf.frequency.value = 180;
-          lowShelf.gain.value = 1.5;
+          lowShelf.frequency.value = 160;
+          lowShelf.gain.value = 2.5;
 
           const highShelf = ctx.createBiquadFilter();
           highShelf.type = 'highshelf';
-          highShelf.frequency.value = 5000;
-          highShelf.gain.value = -0.8;
+          highShelf.frequency.value = 3200;
+          highShelf.gain.value = 1.5;
 
           source.connect(delay1);
           source.connect(delay2);
