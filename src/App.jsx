@@ -589,41 +589,66 @@ export default function App() {
       }
       window.speechSynthesis.cancel();
 
-      const startSpeaking = (voiceList) => {
-        const utter = new SpeechSynthesisUtterance(cleanText);
-        const hasDevanagari = /[\u0900-\u097F]/.test(cleanText);
+      const hinglishToHindi = cleanText.replace(/\b([a-zA-Z]+)\b/g, (w) => {
+        const map = {
+          main: 'मैं',
+          mai: 'मैं',
+          hoon: 'हूँ',
+          hu: 'हूँ',
+          hai: 'है',
+          hain: 'हैं',
+          kaise: 'कैसे',
+          kya: 'क्या',
+          kaun: 'कौन',
+          karu: 'करूँ',
+          karoon: 'करूँ',
+          aap: 'आप',
+          aapka: 'आपका',
+          aapki: 'आपकी',
+          mera: 'मेरा',
+          meri: 'मेरी',
+          aur: 'और',
+          nahi: 'नहीं',
+          nhi: 'नहीं',
+          haan: 'हाँ',
+          batao: 'बताओ',
+          bataiye: 'बताइए',
+          jaanna: 'जानना',
+          baare: 'बारे',
+          mein: 'में',
+          me: 'में',
+          se: 'से',
+          ko: 'को',
+          ka: 'का',
+          ki: 'की',
+          ke: 'के'
+        };
+        return map[w.toLowerCase()] || w;
+      });
 
-        // Priority 1: Indian Male Voices (Madhur, Prabhat, Ravi, Hemant)
-        // Priority 2: Google Hindi / Native hi-IN Voices
-        // Priority 3: Indian English Voices (Neerja, Heera, en-IN)
-        const indianMaleVoice = voiceList.find(
-          (v) =>
-            /madhur|prabhat|ravi|hemant|male/i.test(v.name) &&
-            (/hi|in/i.test(v.lang) || /india|hindi/i.test(v.name))
-        );
+      const startSpeaking = (voiceList) => {
+        const utter = new SpeechSynthesisUtterance(hinglishToHindi);
+
         const hindiVoice = voiceList.find(
-          (v) => /hi-in/i.test(v.lang) || /hindi|हिन्दी/i.test(v.name)
+          (v) => /hi-in/i.test(v.lang) || /hindi|हिन्दी|madhur|swara/i.test(v.name)
         );
         const indianEnglishVoice = voiceList.find(
-          (v) => /en-in/i.test(v.lang) || /india|neerja|heera/i.test(v.name)
+          (v) => /en-in/i.test(v.lang) || /india|neerja|heera|prabhat|ravi/i.test(v.name)
         );
 
-        const chosenVoice = hasDevanagari
-          ? hindiVoice || indianMaleVoice || indianEnglishVoice
-          : indianMaleVoice || indianEnglishVoice || hindiVoice;
+        const chosenVoice = hindiVoice || indianEnglishVoice;
 
         if (chosenVoice) {
           utter.voice = chosenVoice;
-          utter.lang = chosenVoice.lang || (hasDevanagari ? 'hi-IN' : 'en-IN');
+          utter.lang = chosenVoice.lang || 'hi-IN';
         } else {
-          utter.lang = hasDevanagari ? 'hi-IN' : 'en-IN';
+          utter.lang = 'hi-IN';
         }
 
-        // Match emotion subtly in browser voice too
-        if (/माफ़|सॉरी|sorry|दुख|समस्या|दिक्कत|error/i.test(cleanText)) {
+        if (/माफ़|सॉरी|sorry|दुख|समस्या|दिक्कत|error/i.test(hinglishToHindi)) {
           utter.rate = 0.92;
           utter.pitch = 0.94;
-        } else if (/!|कमाल|शानदार|बधाई|awesome|happy|वाह/i.test(cleanText)) {
+        } else if (/!|कमाल|शानदार|बधाई|awesome|happy|वाह/i.test(hinglishToHindi)) {
           utter.rate = 1.04;
           utter.pitch = 1.04;
         } else {
@@ -663,9 +688,12 @@ export default function App() {
     if (isCurrentlyActive) return;
 
     const clean = String(text || '')
-      .replace(/https?:\/\/\S+/g, '')
-      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-      .replace(/[*_#`~>•]/g, ' ')
+      .replace(/\[([^\]]+)\]\((?:https?:\/\/|tel:|mailto:)[^)]+\)/gi, '$1')
+      .replace(/(?:https?:\/\/|www\.|tel:|mailto:)\S+/gi, ' ')
+      .replace(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\.(?:ac\.in|edu\.in|gov\.in|org\.in|com|in|org|net|io|ai|app)(?:\/\S*)?/gi, ' ')
+      .replace(/\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g, ' ')
+      .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u200D]/gu, ' ')
+      .replace(/[*_#`~>•|[\]()]/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
     if (!clean) return;

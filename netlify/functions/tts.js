@@ -1,11 +1,8 @@
 // File: netlify/functions/tts.js
 // Vikash AI — Expressive Human-Like Voice Engine
 // Priority 1: Your Custom Cloned Voice via Fish Audio (`FISH_API_KEY` + `FISH_VOICE_ID`)
-// Priority 2: Free Unlimited Neural AI Voice (`hi-IN-MadhurNeural` via `ws` WebSocket)
-// Priority 3: Frontend Browser Voice fallback
-
-import crypto from 'node:crypto';
-import WebSocket from 'ws';
+// Priority 2: Free Unlimited Hindi/Indian Neural Audio Stream (No external npm packages needed)
+// Priority 3: Frontend Browser Hindi Voice fallback
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -21,11 +18,9 @@ function jsonResponse(status, body) {
   });
 }
 
-// Conversational Prosody & Emotion Analyzer
 function analyzeConversationalTone(text) {
   const t = String(text || '').toLowerCase();
 
-  // 1. Empathetic / Apologetic / Serious
   if (
     /माफ़|सॉरी|sorry|दुख|sad|समस्या|दिक्कत|problem|error|fail|कट|अफसोस|चिंता मत|trouble|issue|down|overload/i.test(
       t
@@ -36,15 +31,12 @@ function analyzeConversationalTone(text) {
       fishSpeed: 0.94,
       fishVolume: -1,
       temperature: 0.65,
-      topP: 0.72,
-      edgeRate: '-6%',
-      edgePitch: '-3Hz'
+      topP: 0.72
     };
   }
 
-  // 2. Excited / Warm / Celebratory
   if (
-    /!|🎉|🎂|🥳|😄|😊|कमाल|शानदार|बधाई|congrat|awesome|amazing|great|happy|खुशी|वाह|best performer|award|भाई|यार/i.test(
+    /!|कमाल|शानदार|बधाई|congrat|awesome|amazing|great|happy|खुशी|वाह|best performer|award|भाई|यार/i.test(
       t
     )
   ) {
@@ -53,29 +45,34 @@ function analyzeConversationalTone(text) {
       fishSpeed: 1.04,
       fishVolume: 1,
       temperature: 0.85,
-      topP: 0.85,
-      edgeRate: '+4%',
-      edgePitch: '+3Hz'
+      topP: 0.85
     };
   }
 
-  // 3. Natural Friendly Conversation (Default)
   return {
     mood: 'conversational',
     fishSpeed: 1.0,
     fishVolume: 0,
     temperature: 0.75,
-    topP: 0.78,
-    edgeRate: '+0%',
-    edgePitch: '+0Hz'
+    topP: 0.78
   };
 }
 
+// Strip all links, domains, emails, emojis & markdown symbols so TTS only speaks clean sentences
 function shapeConversationalText(raw) {
   let clean = String(raw || '')
-    .replace(/https?:\/\/\S+/g, '')
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
-    .replace(/[*_#`~>•]/g, ' ')
+    // 1. Remove Markdown links keeping only human-readable label
+    .replace(/\[([^\]]+)\]\((?:https?:\/\/|tel:|mailto:)[^)]+\)/gi, '$1')
+    // 2. Remove all full URLs (http, https, www, tel, mailto)
+    .replace(/(?:https?:\/\/|www\.|tel:|mailto:)\S+/gi, ' ')
+    // 3. Remove bare domain links like ddugu.ac.in, github.com/user, aktu.ac.in
+    .replace(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\.(?:ac\.in|edu\.in|gov\.in|org\.in|com|in|org|net|io|ai|app)(?:\/\S*)?/gi, ' ')
+    // 4. Remove email addresses
+    .replace(/\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g, ' ')
+    // 5. Remove all Emojis, pictographs, variation selectors & symbols
+    .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u200D]/gu, ' ')
+    // 6. Remove Markdown formatting characters
+    .replace(/[*_#`~>•|[\]()]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 900);
@@ -86,15 +83,6 @@ function shapeConversationalText(raw) {
     .replace(/\s+(लेकिन|पर|मगर|क्योंकि|तो|इसलिए)\s+/g, ', $1 ');
 
   return clean;
-}
-
-function escapeXml(str) {
-  return String(str || '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
 }
 
 // Priority 1: Fish Audio Custom Cloned Voice
@@ -138,126 +126,58 @@ async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
   }
 }
 
-// Priority 2: Free Unlimited Neural AI Voice (Microsoft Edge Neural TTS via `ws` WebSocket)
-async function synthesizeEdgeNeuralVoice(text, tone) {
-  const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
-  const CHROMIUM_FULL_VERSION = '130.0.2849.68';
-  const SEC_MS_GEC_VERSION = `1-${CHROMIUM_FULL_VERSION}`;
+// Priority 2: Free Unlimited Hindi Neural TTS Stream (Zero extra dependencies)
+async function synthesizeHindiNeuralStream(text) {
+  const sentences = text
+    .split(/(?<=[।.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
 
-  const WIN_EPOCH_OFFSET = 11644473600n;
-  const nowSec = BigInt(Math.floor(Date.now() / 1000));
-  let ticks = (nowSec + WIN_EPOCH_OFFSET) * 10000000n;
-  ticks -= ticks % 3000000000n;
-  const secMsGec = crypto
-    .createHash('sha256')
-    .update(`${ticks}${TRUSTED_CLIENT_TOKEN}`)
-    .digest('hex')
-    .toUpperCase();
+  const chunks = [];
+  let current = '';
+  for (const s of sentences) {
+    if ((current + ' ' + s).trim().length <= 180) {
+      current = (current + ' ' + s).trim();
+    } else {
+      if (current) chunks.push(current);
+      current = s.slice(0, 180);
+    }
+  }
+  if (current) chunks.push(current);
 
-  const reqId = crypto.randomUUID().replace(/-/g, '');
-  const wsUrl = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=${TRUSTED_CLIENT_TOKEN}&Sec-MS-GEC=${secMsGec}&Sec-MS-GEC-Version=${SEC_MS_GEC_VERSION}&ConnectionId=${reqId}`;
+  const limitedChunks = chunks.slice(0, 5);
+  if (limitedChunks.length === 0) return null;
 
-  return new Promise((resolve, reject) => {
-    const audioChunks = [];
-    let settled = false;
-
-    const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        try {
-          ws.close();
-        } catch {}
-        reject(new Error('Edge Neural TTS timeout'));
-      }
-    }, 7500);
-
-    const ws = new WebSocket(wsUrl, {
-      headers: {
-        Pragma: 'no-cache',
-        'Cache-Control': 'no-cache',
-        Origin: 'chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold',
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0'
-      }
-    });
-
-    ws.on('open', () => {
-      const configMsg =
-        `X-Timestamp:${new Date().toISOString()}\r\n` +
-        `Content-Type:application/json; charset=utf-8\r\n` +
-        `Path:speech.config\r\n\r\n` +
-        JSON.stringify({
-          context: {
-            synthesis: {
-              audio: {
-                metadataoptions: {
-                  sentenceBoundaryEnabled: 'false',
-                  wordBoundaryEnabled: 'false'
-                },
-                outputFormat: 'audio-24khz-48kbitrate-mono-mp3'
-              }
-            }
+  try {
+    const buffers = await Promise.all(
+      limitedChunks.map(async (part) => {
+        const url = `https://translate.googleapis.com/translate_tts?ie=UTF-8&client=gtx&tl=hi&q=${encodeURIComponent(
+          part
+        )}`;
+        const res = await fetch(url, {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
           }
         });
-      ws.send(configMsg);
+        if (!res.ok) throw new Error('Hindi TTS chunk failed');
+        return new Uint8Array(await res.arrayBuffer());
+      })
+    );
 
-      const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='hi-IN'><voice name='hi-IN-MadhurNeural'><prosody rate='${tone.edgeRate}' pitch='${tone.edgePitch}'>${escapeXml(text)}</prosody></voice></speak>`;
+    const totalLen = buffers.reduce((sum, b) => sum + b.byteLength, 0);
+    if (totalLen < 200) return null;
 
-      const ssmlMsg =
-        `X-RequestId:${reqId}\r\n` +
-        `Content-Type:application/ssml+xml\r\n` +
-        `X-Timestamp:${new Date().toISOString()}\r\n` +
-        `Path:ssml\r\n\r\n` +
-        ssml;
-      ws.send(ssmlMsg);
-    });
-
-    ws.on('message', (data, isBinary) => {
-      if (isBinary) {
-        const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-        if (buf.length > 2) {
-          const headerLen = buf.readUInt16BE(0);
-          const audioData = buf.subarray(2 + headerLen);
-          if (audioData.length > 0) {
-            audioChunks.push(audioData);
-          }
-        }
-      } else {
-        const str = data.toString('utf8');
-        if (str.includes('Path:turn.end')) {
-          clearTimeout(timer);
-          if (!settled) {
-            settled = true;
-            try {
-              ws.close();
-            } catch {}
-            if (audioChunks.length > 0) {
-              resolve(Buffer.concat(audioChunks));
-            } else {
-              reject(new Error('Empty Edge Neural audio'));
-            }
-          }
-        }
-      }
-    });
-
-    ws.on('error', (err) => {
-      clearTimeout(timer);
-      if (!settled) {
-        settled = true;
-        reject(err);
-      }
-    });
-
-    ws.on('close', () => {
-      clearTimeout(timer);
-      if (!settled) {
-        settled = true;
-        if (audioChunks.length > 0) resolve(Buffer.concat(audioChunks));
-        else reject(new Error('Socket closed before audio'));
-      }
-    });
-  });
+    const merged = new Uint8Array(totalLen);
+    let offset = 0;
+    for (const b of buffers) {
+      merged.set(b, offset);
+      offset += b.byteLength;
+    }
+    return merged.buffer;
+  } catch {
+    return null;
+  }
 }
 
 export default async (req) => {
@@ -301,23 +221,21 @@ export default async (req) => {
     }
   }
 
-  // 2. Auto-Fallback to Free Unlimited WebSocket (`ws`) Neural AI Voice (`hi-IN-MadhurNeural`)
-  try {
-    const neuralMp3 = await synthesizeEdgeNeuralVoice(spokenText, tone);
-    if (neuralMp3 && neuralMp3.length > 0) {
-      return new Response(neuralMp3, {
-        status: 200,
-        headers: {
-          'Content-Type': 'audio/mpeg',
-          'X-Voice-Source': 'ws-neural-madhur',
-          'X-Voice-Mood': tone.mood,
-          'Cache-Control': 'public, max-age=86400',
-          ...CORS_HEADERS
-        }
-      });
-    }
-  } catch {}
+  // 2. Auto-Fallback to Free Unlimited Hindi Neural Audio Stream
+  const hindiAudio = await synthesizeHindiNeuralStream(spokenText);
+  if (hindiAudio) {
+    return new Response(hindiAudio, {
+      status: 200,
+      headers: {
+        'Content-Type': 'audio/mpeg',
+        'X-Voice-Source': 'hindi-neural-fallback',
+        'X-Voice-Mood': tone.mood,
+        'Cache-Control': 'public, max-age=86400',
+        ...CORS_HEADERS
+      }
+    });
+  }
 
   // 3. Emergency Browser Offline Voice Fallback
-  return jsonResponse(200, { fallback: true, reason: 'all_neural_tts_unavailable' });
+  return jsonResponse(200, { fallback: true, reason: 'tts_unavailable' });
 };
