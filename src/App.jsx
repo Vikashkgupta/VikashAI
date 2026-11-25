@@ -599,8 +599,8 @@ export default function App() {
 
           const source = ctx.createMediaElementSource(audio);
           const sr = ctx.sampleRate;
-          const bufferTime = 0.065; // 65ms window -> crisp speech, zero echo
-          const pitchRatio = 0.78; // ~ -4.3 semitones (natural male pitch without slowing down)
+          const bufferTime = 0.055; // 65ms window -> crisp speech, zero echo
+          const pitchRatio = 0.85; // ~ -4.3 semitones (natural male pitch without slowing down)
           const modDepth = bufferTime * (1 - pitchRatio);
           const N = Math.max(128, Math.floor(sr * bufferTime));
 
