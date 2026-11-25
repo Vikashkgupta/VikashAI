@@ -1,7 +1,7 @@
 // File: netlify/functions/tts.js
 // Vikash AI — Expressive Human-Like Voice Engine
-// Priority 1: Your Custom Cloned Voice (ElevenLabs `eleven_multilingual_v2` with high emotion/prosody)
-// Priority 2: Free Unlimited Neural AI Voice (`hi-IN-MadhurNeural` — natural conversational Indian tone, NOT robotic book-reading)
+// Priority 1: Your Custom Cloned Voice via Fish Audio (`FISH_API_KEY` + `FISH_VOICE_ID`)
+// Priority 2: Free Unlimited Neural AI Voice (`hi-IN-MadhurNeural` via `ws` WebSocket)
 // Priority 3: Frontend Browser Voice fallback
 
 import crypto from 'node:crypto';
@@ -21,7 +21,7 @@ function jsonResponse(status, body) {
   });
 }
 
-// Conversational Prosody & Emotion Analyzer (Makes AI speak like a real friend, not a textbook)
+// Conversational Prosody & Emotion Analyzer
 function analyzeConversationalTone(text) {
   const t = String(text || '').toLowerCase();
 
@@ -33,10 +33,10 @@ function analyzeConversationalTone(text) {
   ) {
     return {
       mood: 'empathetic',
-      stability: 0.48,
-      similarity_boost: 0.85,
-      style: 0.55,
-      speed: 0.94,
+      fishSpeed: 0.94,
+      fishVolume: -1,
+      temperature: 0.65,
+      topP: 0.72,
       edgeRate: '-6%',
       edgePitch: '-3Hz'
     };
@@ -50,22 +50,22 @@ function analyzeConversationalTone(text) {
   ) {
     return {
       mood: 'warm_excited',
-      stability: 0.28,
-      similarity_boost: 0.82,
-      style: 0.78,
-      speed: 1.03,
+      fishSpeed: 1.04,
+      fishVolume: 1,
+      temperature: 0.85,
+      topP: 0.85,
       edgeRate: '+4%',
       edgePitch: '+3Hz'
     };
   }
 
-  // 3. Natural Friendly Conversation (Default — lower stability = more natural human inflection!)
+  // 3. Natural Friendly Conversation (Default)
   return {
     mood: 'conversational',
-    stability: 0.34,
-    similarity_boost: 0.82,
-    style: 0.65,
-    speed: 1.0,
+    fishSpeed: 1.0,
+    fishVolume: 0,
+    temperature: 0.75,
+    topP: 0.78,
     edgeRate: '+0%',
     edgePitch: '+0Hz'
   };
@@ -80,7 +80,7 @@ function shapeConversationalText(raw) {
     .trim()
     .slice(0, 900);
 
-  // Add natural conversational pauses after Hindi/English fillers so it sounds spoken, not read
+  // Add natural conversational pauses so it sounds spoken, not read
   clean = clean
     .replace(/^(अरे भाई|अरे यार|देखो भाई|हाँ बिल्कुल|नमस्ते|हाय|सुनो)[,!]?\s+/i, '$1... ')
     .replace(/\s+(लेकिन|पर|मगर|क्योंकि|तो|इसलिए)\s+/g, ', $1 ');
@@ -97,13 +97,53 @@ function escapeXml(str) {
     .replace(/'/g, '&apos;');
 }
 
-// Free Unlimited Neural AI Voice (Microsoft Edge Neural TTS via WebSocket)
+// Priority 1: Fish Audio Custom Cloned Voice
+async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 8500);
+
+  try {
+    const res = await fetch('https://api.fish.audio/v1/tts', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        model: 's1'
+      },
+      body: JSON.stringify({
+        text,
+        reference_id: voiceId,
+        format: 'mp3',
+        mp3_bitrate: 128,
+        normalize: true,
+        latency: 'balanced',
+        temperature: tone.temperature,
+        top_p: tone.topP,
+        prosody: {
+          speed: tone.fishSpeed,
+          volume: tone.fishVolume
+        }
+      })
+    });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) return null;
+    const audioBuffer = await res.arrayBuffer();
+    if (!audioBuffer || audioBuffer.byteLength < 200) return null;
+    return audioBuffer;
+  } catch {
+    clearTimeout(timeoutId);
+    return null;
+  }
+}
+
+// Priority 2: Free Unlimited Neural AI Voice (Microsoft Edge Neural TTS via `ws` WebSocket)
 async function synthesizeEdgeNeuralVoice(text, tone) {
   const TRUSTED_CLIENT_TOKEN = '6A5AA1D4EAFF4E9FB37E23D68491D6F4';
   const CHROMIUM_FULL_VERSION = '130.0.2849.68';
   const SEC_MS_GEC_VERSION = `1-${CHROMIUM_FULL_VERSION}`;
 
-  // Generate Sec-MS-GEC token (Windows filetime ticks rounded to 5 minutes)
   const WIN_EPOCH_OFFSET = 11644473600n;
   const nowSec = BigInt(Math.floor(Date.now() / 1000));
   let ticks = (nowSec + WIN_EPOCH_OFFSET) * 10000000n;
@@ -241,58 +281,27 @@ export default async (req) => {
   }
 
   const tone = analyzeConversationalTone(spokenText);
-  const apiKey = String(process.env.ELEVENLABS_API_KEY || '').trim();
-  const voiceId = String(process.env.ELEVENLABS_VOICE_ID || '').trim();
+  const fishApiKey = String(process.env.FISH_API_KEY || '').trim();
+  const fishVoiceId = String(process.env.FISH_VOICE_ID || '').trim();
 
-  // PRIORITY 1: Your Custom Cloned Voice via ElevenLabs (`eleven_multilingual_v2` for true human emotion)
-  if (apiKey && voiceId) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 9000);
-    try {
-      const res = await fetch(
-        `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`,
-        {
-          method: 'POST',
-          signal: controller.signal,
-          headers: {
-            'xi-api-key': apiKey,
-            'Content-Type': 'application/json',
-            Accept: 'audio/mpeg'
-          },
-          body: JSON.stringify({
-            text: spokenText,
-            model_id: 'eleven_multilingual_v2',
-            voice_settings: {
-              stability: tone.stability,
-              similarity_boost: tone.similarity_boost,
-              style: tone.style,
-              use_speaker_boost: true,
-              speed: tone.speed
-            }
-          })
+  // 1. Try Fish Audio Custom Cloned Voice First
+  if (fishApiKey && fishVoiceId) {
+    const fishAudio = await synthesizeFishCustomVoice(spokenText, tone, fishApiKey, fishVoiceId);
+    if (fishAudio) {
+      return new Response(fishAudio, {
+        status: 200,
+        headers: {
+          'Content-Type': 'audio/mpeg',
+          'X-Voice-Source': 'fish-audio-custom',
+          'X-Voice-Mood': tone.mood,
+          'Cache-Control': 'public, max-age=86400',
+          ...CORS_HEADERS
         }
-      );
-      clearTimeout(timeoutId);
-
-      if (res.ok) {
-        const audioBuffer = await res.arrayBuffer();
-        return new Response(audioBuffer, {
-          status: 200,
-          headers: {
-            'Content-Type': 'audio/mpeg',
-            'X-Voice-Source': 'elevenlabs-custom',
-            'X-Voice-Mood': tone.mood,
-            'Cache-Control': 'public, max-age=86400',
-            ...CORS_HEADERS
-          }
-        });
-      }
-    } catch {
-      clearTimeout(timeoutId);
+      });
     }
   }
 
-  // PRIORITY 2: Free Unlimited Neural AI Voice (`hi-IN-MadhurNeural` — natural Indian conversational feel)
+  // 2. Auto-Fallback to Free Unlimited WebSocket (`ws`) Neural AI Voice (`hi-IN-MadhurNeural`)
   try {
     const neuralMp3 = await synthesizeEdgeNeuralVoice(spokenText, tone);
     if (neuralMp3 && neuralMp3.length > 0) {
@@ -300,7 +309,7 @@ export default async (req) => {
         status: 200,
         headers: {
           'Content-Type': 'audio/mpeg',
-          'X-Voice-Source': 'neural-madhur',
+          'X-Voice-Source': 'ws-neural-madhur',
           'X-Voice-Mood': tone.mood,
           'Cache-Control': 'public, max-age=86400',
           ...CORS_HEADERS
@@ -309,6 +318,6 @@ export default async (req) => {
     }
   } catch {}
 
-  // PRIORITY 3: Browser Fallback only if both above fail
+  // 3. Emergency Browser Offline Voice Fallback
   return jsonResponse(200, { fallback: true, reason: 'all_neural_tts_unavailable' });
 };
