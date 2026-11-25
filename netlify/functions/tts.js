@@ -1,16 +1,20 @@
 // File: netlify/functions/tts.js
 // Vikash AI — Expressive Human-Like Voice Engine
 // Priority 1: Your Custom Cloned Voice via Fish Audio (`FISH_API_KEY` + `FISH_VOICE_ID`)
-// Priority 2: Free Unlimited Hindi/Indian Neural Audio Stream (No external npm packages needed)
-// Priority 3: Frontend Browser Hindi Voice fallback
+// Priority 2: Free Unlimited Hindi Neural Audio Stream (Zero external npm packages needed)
+// Priority 3: Frontend Expressive Male Browser Voice fallback
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Expose-Headers': 'X-Voice-Source, X-Voice-Mood, X-Playback-Rate',
   'Access-Control-Max-Age': '86400'
 };
 
+/**
+ * Helper to return standardized JSON responses with CORS headers.
+ */
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), {
     status,
@@ -18,9 +22,14 @@ function jsonResponse(status, body) {
   });
 }
 
+/**
+ * Detects the conversational emotion of the reply so Fish Audio and
+ * the frontend audio player adjust speed, warmth, and energy naturally.
+ */
 function analyzeConversationalTone(text) {
   const t = String(text || '').toLowerCase();
 
+  // Empathetic / Serious / Apologetic tone
   if (
     /माफ़|सॉरी|sorry|दुख|sad|समस्या|दिक्कत|problem|error|fail|कट|अफसोस|चिंता मत|trouble|issue|down|overload/i.test(
       t
@@ -28,13 +37,15 @@ function analyzeConversationalTone(text) {
   ) {
     return {
       mood: 'empathetic',
-      fishSpeed: 0.94,
+      fishSpeed: 0.96,
       fishVolume: -1,
       temperature: 0.65,
-      topP: 0.72
+      topP: 0.72,
+      playbackRate: 1.08
     };
   }
 
+  // Warm / Excited / Energetic tone
   if (
     /!|कमाल|शानदार|बधाई|congrat|awesome|amazing|great|happy|खुशी|वाह|best performer|award|भाई|यार/i.test(
       t
@@ -42,23 +53,29 @@ function analyzeConversationalTone(text) {
   ) {
     return {
       mood: 'warm_excited',
-      fishSpeed: 1.04,
+      fishSpeed: 1.08,
       fishVolume: 1,
       temperature: 0.85,
-      topP: 0.85
+      topP: 0.85,
+      playbackRate: 1.22
     };
   }
 
+  // Default fast, friendly conversational tone
   return {
     mood: 'conversational',
-    fishSpeed: 1.0,
+    fishSpeed: 1.04,
     fishVolume: 0,
-    temperature: 0.75,
-    topP: 0.78
+    temperature: 0.76,
+    topP: 0.8,
+    playbackRate: 1.16
   };
 }
 
-// Strip all links, domains, emails, emojis & markdown symbols so TTS only speaks clean sentences
+/**
+ * Strips all URLs, bare domains, emails, emojis, and markdown characters
+ * so TTS only speaks clean, natural sentences with conversational pauses.
+ */
 function shapeConversationalText(raw) {
   let clean = String(raw || '')
     // 1. Remove Markdown links keeping only human-readable label
@@ -66,7 +83,10 @@ function shapeConversationalText(raw) {
     // 2. Remove all full URLs (http, https, www, tel, mailto)
     .replace(/(?:https?:\/\/|www\.|tel:|mailto:)\S+/gi, ' ')
     // 3. Remove bare domain links like ddugu.ac.in, github.com/user, aktu.ac.in
-    .replace(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\.(?:ac\.in|edu\.in|gov\.in|org\.in|com|in|org|net|io|ai|app)(?:\/\S*)?/gi, ' ')
+    .replace(
+      /\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\.(?:ac\.in|edu\.in|gov\.in|org\.in|com|in|org|net|io|ai|app)(?:\/\S*)?/gi,
+      ' '
+    )
     // 4. Remove email addresses
     .replace(/\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g, ' ')
     // 5. Remove all Emojis, pictographs, variation selectors & symbols
@@ -77,7 +97,7 @@ function shapeConversationalText(raw) {
     .trim()
     .slice(0, 900);
 
-  // Add natural conversational pauses so it sounds spoken, not read
+  // Add subtle breath pauses so it feels spoken rather than flatly read
   clean = clean
     .replace(/^(अरे भाई|अरे यार|देखो भाई|हाँ बिल्कुल|नमस्ते|हाय|सुनो)[,!]?\s+/i, '$1... ')
     .replace(/\s+(लेकिन|पर|मगर|क्योंकि|तो|इसलिए)\s+/g, ', $1 ');
@@ -85,7 +105,9 @@ function shapeConversationalText(raw) {
   return clean;
 }
 
-// Priority 1: Fish Audio Custom Cloned Voice
+/**
+ * Priority 1: Synthesize your custom cloned voice via Fish Audio API.
+ */
 async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 8500);
@@ -126,7 +148,9 @@ async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
   }
 }
 
-// Priority 2: Free Unlimited Hindi Neural TTS Stream (Zero extra dependencies)
+/**
+ * Priority 2: Free unlimited Hindi Neural TTS audio stream (chunked & merged).
+ */
 async function synthesizeHindiNeuralStream(text) {
   const sentences = text
     .split(/(?<=[।.!?])\s+/)
@@ -214,6 +238,7 @@ export default async (req) => {
           'Content-Type': 'audio/mpeg',
           'X-Voice-Source': 'fish-audio-custom',
           'X-Voice-Mood': tone.mood,
+          'X-Playback-Rate': '1.0',
           'Cache-Control': 'public, max-age=86400',
           ...CORS_HEADERS
         }
@@ -230,6 +255,7 @@ export default async (req) => {
         'Content-Type': 'audio/mpeg',
         'X-Voice-Source': 'hindi-neural-fallback',
         'X-Voice-Mood': tone.mood,
+        'X-Playback-Rate': String(tone.playbackRate),
         'Cache-Control': 'public, max-age=86400',
         ...CORS_HEADERS
       }

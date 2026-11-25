@@ -621,45 +621,90 @@ export default function App() {
           ko: 'को',
           ka: 'का',
           ki: 'की',
-          ke: 'के'
+          ke: 'के',
+          yaar: 'यार',
+          bhai: 'भाई',
+          bilkul: 'बिल्कुल',
+          achha: 'अच्छा',
+          accha: 'अच्छा'
         };
         return map[w.toLowerCase()] || w;
       });
 
       const startSpeaking = (voiceList) => {
-        const utter = new SpeechSynthesisUtterance(hinglishToHindi);
-
+        // Strictly prioritize Indian / Hindi MALE voices first
+        const maleIndianVoice = voiceList.find((v) =>
+          /madhur|prabhat|ravi|hemant|male|man|boy/i.test(v.name) && /hi|in|india/i.test(`${v.lang} ${v.name}`)
+        );
+        const anyIndianMale = voiceList.find((v) =>
+          /madhur|prabhat|ravi|hemant/i.test(v.name)
+        );
         const hindiVoice = voiceList.find(
-          (v) => /hi-in/i.test(v.lang) || /hindi|हिन्दी|madhur|swara/i.test(v.name)
+          (v) => /hi-in/i.test(v.lang) || /hindi|हिन्दी/i.test(v.name)
         );
         const indianEnglishVoice = voiceList.find(
-          (v) => /en-in/i.test(v.lang) || /india|neerja|heera|prabhat|ravi/i.test(v.name)
+          (v) => /en-in/i.test(v.lang) || /india|ravi|prabhat/i.test(v.name)
         );
 
-        const chosenVoice = hindiVoice || indianEnglishVoice;
+        const chosenVoice = maleIndianVoice || anyIndianMale || hindiVoice || indianEnglishVoice;
 
-        if (chosenVoice) {
-          utter.voice = chosenVoice;
-          utter.lang = chosenVoice.lang || 'hi-IN';
-        } else {
-          utter.lang = 'hi-IN';
+        // Split into natural conversational clauses so each sentence gets dynamic pitch & speed (no book-reading monotone!)
+        const clauses = hinglishToHindi
+          .split(/(?<=[।!?])\s+|\.\.\.\s+/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+
+        if (clauses.length === 0) {
+          setSpeakingMsgId(null);
+          return;
         }
 
-        if (/माफ़|सॉरी|sorry|दुख|समस्या|दिक्कत|error/i.test(hinglishToHindi)) {
-          utter.rate = 0.92;
-          utter.pitch = 0.94;
-        } else if (/!|कमाल|शानदार|बधाई|awesome|happy|वाह/i.test(hinglishToHindi)) {
-          utter.rate = 1.04;
-          utter.pitch = 1.04;
-        } else {
-          utter.rate = 0.98;
-          utter.pitch = 0.98;
-        }
-
-        utter.onend = () => setSpeakingMsgId(null);
-        utter.onerror = () => setSpeakingMsgId(null);
         setSpeakingMsgId(msgId);
-        window.speechSynthesis.speak(utter);
+        let idx = 0;
+
+        const speakNextClause = () => {
+          if (idx >= clauses.length) {
+            setSpeakingMsgId(null);
+            return;
+          }
+          const segment = clauses[idx];
+          idx += 1;
+
+          const utter = new SpeechSynthesisUtterance(segment);
+          if (chosenVoice) {
+            utter.voice = chosenVoice;
+            utter.lang = chosenVoice.lang || 'hi-IN';
+          } else {
+            utter.lang = 'hi-IN';
+          }
+
+          // Dynamic emotion prosody per sentence (Male pitch + fast natural pace)
+          if (segment.endsWith('?')) {
+            // Curious rising intonation on questions
+            utter.rate = 1.18;
+            utter.pitch = 0.96;
+          } else if (/!|कमाल|शानदार|बधाई|awesome|happy|वाह|अरे भाई|अरे यार/i.test(segment)) {
+            // Warm & energetic on excitement
+            utter.rate = 1.24;
+            utter.pitch = 0.94;
+          } else if (/माफ़|सॉरी|sorry|दुख|समस्या|दिक्कत|error|चिंता मत/i.test(segment)) {
+            // Soft & empathetic on apologies/issues
+            utter.rate = 1.08;
+            utter.pitch = 0.85;
+          } else {
+            // Crisp, natural male conversational flow
+            utter.rate = 1.18;
+            utter.pitch = 0.89;
+          }
+
+          utter.onend = () => {
+            setTimeout(speakNextClause, 95);
+          };
+          utter.onerror = () => setSpeakingMsgId(null);
+          window.speechSynthesis.speak(utter);
+        };
+
+        speakNextClause();
       };
 
       const available =
@@ -699,9 +744,13 @@ export default function App() {
     if (!clean) return;
 
     // 1. Play instantly from memory cache (0ms, 0 extra characters spent!)
-    const cachedBlobUrl = audioCacheRef.current.get(clean);
-    if (cachedBlobUrl) {
-      const audio = new Audio(cachedBlobUrl);
+    const cachedEntry = audioCacheRef.current.get(clean);
+    if (cachedEntry) {
+      const audio = new Audio(cachedEntry.url);
+      audio.playbackRate = cachedEntry.rate || 1.16;
+      if (cachedEntry.isFallbackStream && 'preservesPitch' in audio) {
+        audio.preservesPitch = false; // Lowers pitch slightly into natural male tone while speeding up!
+      }
       audioPlayerRef.current = audio;
       setSpeakingMsgId(msgId);
       audio.onended = () => setSpeakingMsgId(null);
@@ -710,13 +759,13 @@ export default function App() {
       return;
     }
 
-    // 2. If 10,000 monthly quota already ended in this session, go straight to 0ms browser voice
+    // 2. If quota ended in this session, go straight to expressive browser male voice
     if (elevenLabsExhaustedRef.current) {
       speakWithBrowserFallback(msgId, clean);
       return;
     }
 
-    // 3. Try Custom Cloned Voice (ElevenLabs) first -> auto-fallback to browser voice on quota limit
+    // 3. Try Custom Cloned Voice (Fish Audio) first -> Expressive Male Fallback
     try {
       setLoadingAudioMsgId(msgId);
       const res = await fetch(TTS_API, {
@@ -726,6 +775,9 @@ export default function App() {
       });
 
       const contentType = res.headers.get('content-type') || '';
+      const voiceSource = res.headers.get('x-voice-source') || '';
+      const playbackRate = Number(res.headers.get('x-playback-rate') || 1.16);
+
       if (!res.ok || !contentType.includes('audio/mpeg')) {
         elevenLabsExhaustedRef.current = true;
         setLoadingAudioMsgId(null);
@@ -733,12 +785,33 @@ export default function App() {
         return;
       }
 
+      // If server returned generic female neural stream, prefer native Indian Male voice if device has Madhur/Prabhat
+      const hasNativeIndianMale = (cachedVoicesRef.current || []).some((v) =>
+        /madhur|prabhat|ravi|hemant/i.test(v.name)
+      );
+      if (voiceSource === 'hindi-neural-fallback' && hasNativeIndianMale) {
+        setLoadingAudioMsgId(null);
+        speakWithBrowserFallback(msgId, clean);
+        return;
+      }
+
       const blob = await res.blob();
       const blobUrl = URL.createObjectURL(blob);
-      audioCacheRef.current.set(clean, blobUrl);
+      const isFallbackStream = voiceSource === 'hindi-neural-fallback';
+      audioCacheRef.current.set(clean, {
+        url: blobUrl,
+        rate: isFallbackStream ? playbackRate : 1.0,
+        isFallbackStream
+      });
 
       setLoadingAudioMsgId(null);
       const audio = new Audio(blobUrl);
+      if (isFallbackStream) {
+        audio.playbackRate = playbackRate;
+        if ('preservesPitch' in audio) {
+          audio.preservesPitch = false; // Gives deeper male resonance + faster pace
+        }
+      }
       audioPlayerRef.current = audio;
       setSpeakingMsgId(msgId);
       audio.onended = () => setSpeakingMsgId(null);
