@@ -29,7 +29,7 @@ function analyzeConversationalTone(text) {
   ) {
     return {
       mood: 'empathetic',
-      fishSpeed: 0.96,
+      fishSpeed: 1.0,
       fishVolume: -1,
       temperature: 0.65,
       topP: 0.72,
@@ -44,7 +44,7 @@ function analyzeConversationalTone(text) {
   ) {
     return {
       mood: 'warm_excited',
-      fishSpeed: 1.08,
+      fishSpeed: 1.12,
       fishVolume: 1,
       temperature: 0.85,
       topP: 0.85,
@@ -54,7 +54,7 @@ function analyzeConversationalTone(text) {
 
   return {
     mood: 'conversational',
-    fishSpeed: 1.05,
+    fishSpeed: 1.1,
     fishVolume: 0,
     temperature: 0.76,
     topP: 0.8,
@@ -337,7 +337,6 @@ export default async (req) => {
       }
       return jsonResponse(200, {
         hasFishApiKey: Boolean(fishApiKey),
-        apiKeyPrefix: fishApiKey ? fishApiKey.slice(0, 10) + '...' : '',
         hasFishVoiceId: Boolean(fishVoiceId),
         fishVoiceId,
         model: 's2.1-pro-free',

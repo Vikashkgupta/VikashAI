@@ -574,142 +574,23 @@ export default function App() {
   };
 
   /**
-   * Plays server audio with exact same speed & emotion, applying a zero-click
-   * Hann-windowed Web Audio pitch-shift + crisp vocal EQ for a confident
-   * 22-year-old male tone whenever using the free neural fallback
-   * (bypassed automatically for Fish Audio custom voice).
+   * Plays server audio directly with exact speed & emotion:
+   * - Priority 1 (Fish Audio): plays Vikash's real cloned male voice directly
+   * - Priority 2 (Fallback): plays the clean, natural Indian-accented female voice
+   *   directly with zero artificial pitch distortion.
    */
-  const playServerAudio = async (blobUrl, rate, applyMaleShift, msgId, cleanText) => {
+  const playServerAudio = async (blobUrl, rate, msgId, cleanText) => {
     cleanupPitchNodes();
     const audio = new Audio(blobUrl);
     audio.playbackRate = rate || 1.14;
     if ('preservesPitch' in audio) audio.preservesPitch = true;
     audioPlayerRef.current = audio;
 
-    if (applyMaleShift && typeof window !== 'undefined') {
-      try {
-        const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        if (AudioCtx) {
-          if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
-            audioCtxRef.current = new AudioCtx();
-          }
-          const ctx = audioCtxRef.current;
-          if (ctx.state === 'suspended') {
-            await ctx.resume();
-          }
-
-          const source = ctx.createMediaElementSource(audio);
-          const sr = ctx.sampleRate;
-          const bufferTime = 0.048; // 48ms window -> crisp, zero-echo clarity
-          const pitchRatio = 0.82; // Confident, natural young male tone (22-25yo)
-          const modDepth = bufferTime * (1 - pitchRatio);
-          const N = Math.max(128, Math.floor(sr * bufferTime));
-
-          const modBuf1 = ctx.createBuffer(1, N, sr);
-          const modBuf2 = ctx.createBuffer(1, N, sr);
-          const fadeBuf1 = ctx.createBuffer(1, N, sr);
-          const fadeBuf2 = ctx.createBuffer(1, N, sr);
-
-          const m1 = modBuf1.getChannelData(0);
-          const m2 = modBuf2.getChannelData(0);
-          const f1 = fadeBuf1.getChannelData(0);
-          const f2 = fadeBuf2.getChannelData(0);
-
-          for (let i = 0; i < N; i++) {
-            const p1 = i / N;
-            const p2 = (p1 + 0.5) % 1.0;
-            m1[i] = p1;
-            m2[i] = p2;
-            // Constant-sum Hann crossfade (f1 + f2 === 1.0 everywhere -> zero clicks)
-            f1[i] = 0.5 * (1 - Math.cos(2 * Math.PI * p1));
-            f2[i] = 0.5 * (1 - Math.cos(2 * Math.PI * p2));
-          }
-
-          const mod1 = ctx.createBufferSource();
-          const mod2 = ctx.createBufferSource();
-          const fade1 = ctx.createBufferSource();
-          const fade2 = ctx.createBufferSource();
-
-          mod1.buffer = modBuf1;
-          mod2.buffer = modBuf2;
-          fade1.buffer = fadeBuf1;
-          fade2.buffer = fadeBuf2;
-          mod1.loop = mod2.loop = fade1.loop = fade2.loop = true;
-
-          const delay1 = ctx.createDelay(0.2);
-          const delay2 = ctx.createDelay(0.2);
-          const modGain1 = ctx.createGain();
-          const modGain2 = ctx.createGain();
-          modGain1.gain.value = modDepth;
-          modGain2.gain.value = modDepth;
-
-          const gain1 = ctx.createGain();
-          const gain2 = ctx.createGain();
-          gain1.gain.value = 0;
-          gain2.gain.value = 0;
-
-          // Natural chest warmth + crisp presence for clear, fresh male vocal tone
-          const lowShelf = ctx.createBiquadFilter();
-          lowShelf.type = 'lowshelf';
-          lowShelf.frequency.value = 160;
-          lowShelf.gain.value = 2.5;
-
-          const highShelf = ctx.createBiquadFilter();
-          highShelf.type = 'highshelf';
-          highShelf.frequency.value = 3200;
-          highShelf.gain.value = 1.5;
-
-          source.connect(delay1);
-          source.connect(delay2);
-          delay1.connect(gain1);
-          delay2.connect(gain2);
-          gain1.connect(lowShelf);
-          gain2.connect(lowShelf);
-          lowShelf.connect(highShelf);
-          highShelf.connect(ctx.destination);
-
-          mod1.connect(modGain1);
-          modGain1.connect(delay1.delayTime);
-          mod2.connect(modGain2);
-          modGain2.connect(delay2.delayTime);
-
-          fade1.connect(gain1.gain);
-          fade2.connect(gain2.gain);
-
-          const startAt = ctx.currentTime;
-          mod1.start(startAt);
-          mod2.start(startAt);
-          fade1.start(startAt);
-          fade2.start(startAt);
-
-          activePitchNodesRef.current = {
-            stop: () => {
-              try {
-                mod1.stop();
-                mod2.stop();
-                fade1.stop();
-                fade2.stop();
-              } catch {}
-              try {
-                source.disconnect();
-                lowShelf.disconnect();
-                highShelf.disconnect();
-              } catch {}
-            }
-          };
-        }
-      } catch {
-        // If Web Audio is restricted, fall back to direct <audio> playback
-      }
-    }
-
     setSpeakingMsgId(msgId);
     audio.onended = () => {
-      cleanupPitchNodes();
       setSpeakingMsgId(null);
     };
     audio.onerror = () => {
-      cleanupPitchNodes();
       speakWithBrowserFallback(msgId, cleanText);
     };
     await audio.play();
@@ -843,7 +724,6 @@ export default function App() {
       playServerAudio(
         cachedEntry.url,
         cachedEntry.rate || 1.14,
-        cachedEntry.applyMaleShift !== false,
         msgId,
         clean
       ).catch(() => speakWithBrowserFallback(msgId, clean));
@@ -880,12 +760,11 @@ export default function App() {
       const blobUrl = URL.createObjectURL(blob);
       const isCustomMale = voiceSource === 'fish-audio-custom';
       const finalRate = isCustomMale ? 1.0 : playbackRate;
-      const applyMaleShift = !isCustomMale;
-      audioCacheRef.current.set(clean, { url: blobUrl, rate: finalRate, applyMaleShift });
+      audioCacheRef.current.set(clean, { url: blobUrl, rate: finalRate });
 
-      console.info('[Vikash AI TTS]:', voiceSource || 'server-audio', '| rate:', finalRate, '| maleShift:', applyMaleShift);
+      console.info('[Vikash AI TTS]:', voiceSource || 'server-audio', '| rate:', finalRate);
       setLoadingAudioMsgId(null);
-      await playServerAudio(blobUrl, finalRate, applyMaleShift, msgId, clean);
+      await playServerAudio(blobUrl, finalRate, msgId, clean);
     } catch {
       setLoadingAudioMsgId(null);
       speakWithBrowserFallback(msgId, clean);
