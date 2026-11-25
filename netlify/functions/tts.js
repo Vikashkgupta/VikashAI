@@ -1,8 +1,8 @@
 // File: netlify/functions/tts.js
 // Vikash AI — Expressive Human-Like Voice Engine
 // Priority 1: Your Custom Cloned Voice via Fish Audio (`FISH_API_KEY` + `FISH_VOICE_ID`)
-// Priority 2: Free Unlimited Hindi Neural Audio Stream (Zero external npm packages needed)
-// Priority 3: Frontend Expressive Male Browser Voice fallback
+// Priority 2: Free Unlimited Hindi Neural Audio Stream (Zero skipped words, pure Hindi accent)
+// Priority 3: Frontend Browser Voice fallback
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -12,9 +12,6 @@ const CORS_HEADERS = {
   'Access-Control-Max-Age': '86400'
 };
 
-/**
- * Helper to return standardized JSON responses with CORS headers.
- */
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), {
     status,
@@ -22,16 +19,11 @@ function jsonResponse(status, body) {
   });
 }
 
-/**
- * Detects the conversational emotion of the reply so Fish Audio and
- * the frontend audio player adjust speed, warmth, and energy naturally.
- */
 function analyzeConversationalTone(text) {
   const t = String(text || '').toLowerCase();
 
-  // Empathetic / Serious / Apologetic tone
   if (
-    /माफ़|सॉरी|sorry|दुख|sad|समस्या|दिक्कत|problem|error|fail|कट|अफसोस|चिंता मत|trouble|issue|down|overload/i.test(
+    /माफ़|सॉरी|sorry|दुख|sad|समस्या|दिक्कत|problem|error|fail|अफसोस|चिंता मत|trouble|issue|down|overload/i.test(
       t
     )
   ) {
@@ -41,11 +33,10 @@ function analyzeConversationalTone(text) {
       fishVolume: -1,
       temperature: 0.65,
       topP: 0.72,
-      playbackRate: 1.08
+      playbackRate: 1.06
     };
   }
 
-  // Warm / Excited / Energetic tone
   if (
     /!|कमाल|शानदार|बधाई|congrat|awesome|amazing|great|happy|खुशी|वाह|best performer|award|भाई|यार/i.test(
       t
@@ -57,57 +48,48 @@ function analyzeConversationalTone(text) {
       fishVolume: 1,
       temperature: 0.85,
       topP: 0.85,
-      playbackRate: 1.22
+      playbackRate: 1.18
     };
   }
 
-  // Default fast, friendly conversational tone
   return {
     mood: 'conversational',
-    fishSpeed: 1.04,
+    fishSpeed: 1.05,
     fishVolume: 0,
     temperature: 0.76,
     topP: 0.8,
-    playbackRate: 1.16
+    playbackRate: 1.14
   };
 }
 
 /**
- * Strips all URLs, bare domains, emails, emojis, and markdown characters
- * so TTS only speaks clean, natural sentences with conversational pauses.
+ * Strips ONLY URLs, emails, emojis, and markdown symbols without ever eating normal words.
  */
 function shapeConversationalText(raw) {
   let clean = String(raw || '')
-    // 1. Remove Markdown links keeping only human-readable label
+    // 1. Markdown links [label](url) -> keep readable label
     .replace(/\[([^\]]+)\]\((?:https?:\/\/|tel:|mailto:)[^)]+\)/gi, '$1')
-    // 2. Remove all full URLs (http, https, www, tel, mailto)
+    // 2. Full URLs (http/https/www/tel/mailto)
     .replace(/(?:https?:\/\/|www\.|tel:|mailto:)\S+/gi, ' ')
-    // 3. Remove bare domain links like ddugu.ac.in, github.com/user, aktu.ac.in
+    // 3. Bare domain links only when host has 2+ chars before dot (avoids touching abbreviations)
     .replace(
-      /\b[a-z0-9-]+(?:\.[a-z0-9-]+)+\.(?:ac\.in|edu\.in|gov\.in|org\.in|com|in|org|net|io|ai|app)(?:\/\S*)?/gi,
+      /\b[a-z0-9-]{2,}(?:\.[a-z0-9-]{2,})+\.(?:ac\.in|edu\.in|gov\.in|org\.in|com|in|org|net|io|app)(?:\/\S*)?/gi,
       ' '
     )
-    // 4. Remove email addresses
+    // 4. Email addresses
     .replace(/\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g, ' ')
-    // 5. Remove all Emojis, pictographs, variation selectors & symbols
+    // 5. Emojis & pictographs only (never touches letters or numbers)
     .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u200D]/gu, ' ')
-    // 6. Remove Markdown formatting characters
-    .replace(/[*_#`~>•|[\]()]/g, ' ')
+    // 6. Markdown syntax characters
+    .replace(/[*_`~>•|]/g, ' ')
+    .replace(/#{1,6}\s+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 900);
-
-  // Add subtle breath pauses so it feels spoken rather than flatly read
-  clean = clean
-    .replace(/^(अरे भाई|अरे यार|देखो भाई|हाँ बिल्कुल|नमस्ते|हाय|सुनो)[,!]?\s+/i, '$1... ')
-    .replace(/\s+(लेकिन|पर|मगर|क्योंकि|तो|इसलिए)\s+/g, ', $1 ');
+    .slice(0, 1200);
 
   return clean;
 }
 
-/**
- * Priority 1: Synthesize your custom cloned voice via Fish Audio API.
- */
 async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 8500);
@@ -148,9 +130,6 @@ async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
   }
 }
 
-/**
- * Priority 2: Free unlimited Hindi Neural TTS audio stream (chunked & merged).
- */
 async function synthesizeHindiNeuralStream(text) {
   const sentences = text
     .split(/(?<=[।.!?])\s+/)
@@ -164,12 +143,27 @@ async function synthesizeHindiNeuralStream(text) {
       current = (current + ' ' + s).trim();
     } else {
       if (current) chunks.push(current);
-      current = s.slice(0, 180);
+      // Split very long sentence cleanly on word boundary
+      if (s.length > 180) {
+        const words = s.split(' ');
+        let part = '';
+        for (const w of words) {
+          if ((part + ' ' + w).trim().length <= 180) {
+            part = (part + ' ' + w).trim();
+          } else {
+            if (part) chunks.push(part);
+            part = w;
+          }
+        }
+        current = part;
+      } else {
+        current = s;
+      }
     }
   }
   if (current) chunks.push(current);
 
-  const limitedChunks = chunks.slice(0, 5);
+  const limitedChunks = chunks.slice(0, 7);
   if (limitedChunks.length === 0) return null;
 
   try {
@@ -228,7 +222,7 @@ export default async (req) => {
   const fishApiKey = String(process.env.FISH_API_KEY || '').trim();
   const fishVoiceId = String(process.env.FISH_VOICE_ID || '').trim();
 
-  // 1. Try Fish Audio Custom Cloned Voice First
+  // 1. Priority 1: Your Custom Cloned Voice (Fish Audio)
   if (fishApiKey && fishVoiceId) {
     const fishAudio = await synthesizeFishCustomVoice(spokenText, tone, fishApiKey, fishVoiceId);
     if (fishAudio) {
@@ -246,7 +240,7 @@ export default async (req) => {
     }
   }
 
-  // 2. Auto-Fallback to Free Unlimited Hindi Neural Audio Stream
+  // 2. Priority 2: Free Unlimited Hindi Neural Audio Stream
   const hindiAudio = await synthesizeHindiNeuralStream(spokenText);
   if (hindiAudio) {
     return new Response(hindiAudio, {
@@ -262,6 +256,6 @@ export default async (req) => {
     });
   }
 
-  // 3. Emergency Browser Offline Voice Fallback
+  // 3. Emergency Browser Fallback
   return jsonResponse(200, { fallback: true, reason: 'tts_unavailable' });
 };
