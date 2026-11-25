@@ -6,9 +6,9 @@
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
-  'Access-Control-Expose-Headers': 'X-Voice-Source, X-Voice-Mood, X-Playback-Rate',
+  'Access-Control-Expose-Headers': 'X-Voice-Source, X-Voice-Mood, X-Playback-Rate, X-Fish-Debug',
   'Access-Control-Max-Age': '86400'
 };
 
@@ -67,20 +67,14 @@ function analyzeConversationalTone(text) {
  */
 function shapeConversationalText(raw) {
   let clean = String(raw || '')
-    // 1. Markdown links [label](url) -> keep readable label
     .replace(/\[([^\]]+)\]\((?:https?:\/\/|tel:|mailto:)[^)]+\)/gi, '$1')
-    // 2. Full URLs (http/https/www/tel/mailto)
     .replace(/(?:https?:\/\/|www\.|tel:|mailto:)\S+/gi, ' ')
-    // 3. Bare domain links only when host has 2+ chars before dot (avoids touching abbreviations)
     .replace(
       /\b[a-z0-9-]{2,}(?:\.[a-z0-9-]{2,})+\.(?:ac\.in|edu\.in|gov\.in|org\.in|com|in|org|net|io|app)(?:\/\S*)?/gi,
       ' '
     )
-    // 4. Email addresses
     .replace(/\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g, ' ')
-    // 5. Emojis & pictographs only (never touches letters or numbers)
     .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u200D]/gu, ' ')
-    // 6. Markdown syntax characters
     .replace(/[*_`~>•|]/g, ' ')
     .replace(/#{1,6}\s+/g, ' ')
     .replace(/\s+/g, ' ')
@@ -202,7 +196,7 @@ function prepareTextForHindiTTS(text) {
 
 async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 12000);
+  const timeoutId = setTimeout(() => controller.abort(), 22000);
 
   try {
     const res = await fetch('https://api.fish.audio/v1/tts', {
@@ -218,7 +212,7 @@ async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
         reference_id: voiceId,
         format: 'mp3',
         mp3_bitrate: 128,
-        latency: 'normal',
+        latency: 'balanced',
         temperature: tone.temperature,
         top_p: tone.topP,
         prosody: {
@@ -229,13 +223,18 @@ async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
     });
     clearTimeout(timeoutId);
 
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => '');
+      return { ok: false, audio: null, debug: `http_${res.status}:${errBody.slice(0, 140)}` };
+    }
     const audioBuffer = await res.arrayBuffer();
-    if (!audioBuffer || audioBuffer.byteLength < 200) return null;
-    return audioBuffer;
-  } catch {
+    if (!audioBuffer || audioBuffer.byteLength < 200) {
+      return { ok: false, audio: null, debug: 'empty_audio_buffer' };
+    }
+    return { ok: true, audio: audioBuffer, debug: 'ok' };
+  } catch (err) {
     clearTimeout(timeoutId);
-    return null;
+    return { ok: false, audio: null, debug: `exception:${err?.name || 'error'}` };
   }
 }
 
@@ -256,7 +255,6 @@ async function synthesizeHindiNeuralStream(text) {
       current = (current + ' ' + s).trim();
     } else {
       if (current) chunks.push(current);
-      // Split very long sentence cleanly on word boundary
       if (s.length > 180) {
         const words = s.split(' ');
         let part = '';
@@ -315,6 +313,40 @@ export default async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('', { status: 200, headers: CORS_HEADERS });
   }
+
+  const fishApiKey = String(process.env.FISH_API_KEY || '').trim();
+  const fishVoiceId = String(process.env.FISH_VOICE_ID || '').trim();
+
+  // Live Diagnostic Endpoint: open /.netlify/functions/tts?debug=1 in browser
+  if (req.method === 'GET') {
+    const url = new URL(req.url);
+    if (url.searchParams.get('debug') === '1') {
+      let fishTest = { skipped: true, reason: 'missing_env_vars' };
+      if (fishApiKey && fishVoiceId) {
+        const res = await synthesizeFishCustomVoice(
+          'नमस्ते विकास',
+          analyzeConversationalTone('नमस्ते विकास'),
+          fishApiKey,
+          fishVoiceId
+        );
+        fishTest = {
+          ok: res.ok,
+          bytes: res.audio ? res.audio.byteLength : 0,
+          debug: res.debug
+        };
+      }
+      return jsonResponse(200, {
+        hasFishApiKey: Boolean(fishApiKey),
+        apiKeyPrefix: fishApiKey ? fishApiKey.slice(0, 10) + '...' : '',
+        hasFishVoiceId: Boolean(fishVoiceId),
+        fishVoiceId,
+        model: 's2.1-pro-free',
+        fishTest
+      });
+    }
+    return jsonResponse(200, { ok: true });
+  }
+
   if (req.method !== 'POST') {
     return jsonResponse(405, { fallback: true, error: 'Method not allowed' });
   }
@@ -332,20 +364,21 @@ export default async (req) => {
   }
 
   const tone = analyzeConversationalTone(spokenText);
-  const fishApiKey = String(process.env.FISH_API_KEY || '').trim();
-  const fishVoiceId = String(process.env.FISH_VOICE_ID || '').trim();
+  let fishDebug = 'missing_env_vars';
 
   // 1. Priority 1: Your Custom Cloned Voice (Fish Audio)
   if (fishApiKey && fishVoiceId) {
-    const fishAudio = await synthesizeFishCustomVoice(spokenText, tone, fishApiKey, fishVoiceId);
-    if (fishAudio) {
-      return new Response(fishAudio, {
+    const fishRes = await synthesizeFishCustomVoice(spokenText, tone, fishApiKey, fishVoiceId);
+    fishDebug = fishRes.debug;
+    if (fishRes.ok && fishRes.audio) {
+      return new Response(fishRes.audio, {
         status: 200,
         headers: {
           'Content-Type': 'audio/mpeg',
           'X-Voice-Source': 'fish-audio-custom',
           'X-Voice-Mood': tone.mood,
           'X-Playback-Rate': '1.0',
+          'X-Fish-Debug': 'ok',
           'Cache-Control': 'public, max-age=86400',
           ...CORS_HEADERS
         }
@@ -363,6 +396,7 @@ export default async (req) => {
         'X-Voice-Source': 'hindi-neural-fallback',
         'X-Voice-Mood': tone.mood,
         'X-Playback-Rate': String(tone.playbackRate),
+        'X-Fish-Debug': fishDebug.replace(/[\r\n]+/g, ' ').slice(0, 120),
         'Cache-Control': 'public, max-age=86400',
         ...CORS_HEADERS
       }
@@ -370,5 +404,5 @@ export default async (req) => {
   }
 
   // 3. Emergency Browser Fallback
-  return jsonResponse(200, { fallback: true, reason: 'tts_unavailable' });
+  return jsonResponse(200, { fallback: true, reason: 'tts_unavailable', fishDebug });
 };
