@@ -324,23 +324,35 @@ async function fetchGitHubData() {
 
     const repos = Array.isArray(rawRepos)
       ? rawRepos
-          .filter((r) => !r.fork)
+          .filter((r) => !r.fork && String(r.name || '').toLowerCase() !== username.toLowerCase())
           .slice(0, 8)
-          .map((r) => ({
-            id: String(r.id),
-            name: r.name,
-            description: r.description || 'Full-stack / coding project on GitHub.',
-            tags: [r.language, ...(Array.isArray(r.topics) ? r.topics.slice(0, 2) : [])].filter(Boolean),
-            stars: Number(r.stargazers_count || 0),
-            updatedAt: r.pushed_at || r.updated_at || '',
-            githubUrl: r.html_url,
-            liveUrl:
-              r.homepage && /^https?:\/\//i.test(r.homepage)
-                ? r.homepage
-                : r.name.toLowerCase() === 'vikashai'
-                ? 'https://vikashaiai.netlify.app'
+          .map((r) => {
+            const rawHome = String(r.homepage || '').trim();
+            const normalizedHome = rawHome
+              ? /^https?:\/\//i.test(rawHome)
+                ? rawHome
+                : rawHome.includes('.')
+                ? `https://${rawHome}`
                 : ''
-          }))
+              : '';
+            const fallbackLive =
+              r.name.toLowerCase() === 'vikashai'
+                ? 'https://vikashaiai.netlify.app'
+                : r.name.toLowerCase() === 'portfolio'
+                ? 'https://vikashkumargupta.netlify.app'
+                : '';
+
+            return {
+              id: String(r.id),
+              name: r.name,
+              description: r.description || 'Full-stack / coding project on GitHub.',
+              tags: [r.language, ...(Array.isArray(r.topics) ? r.topics.slice(0, 2) : [])].filter(Boolean),
+              stars: Number(r.stargazers_count || 0),
+              updatedAt: r.pushed_at || r.updated_at || '',
+              githubUrl: r.html_url,
+              liveUrl: normalizedHome || fallbackLive
+            };
+          })
       : [];
 
     cachedGithub = {
@@ -758,7 +770,7 @@ function buildModularSystemPrompt({
   }
 
   lines.push(
-    `Always finish your thoughts/sentences completely (never cut off mid-sentence). Keep replies clear and well-structured.`
+    `Always finish your thoughts/sentences completely (never cut off mid-sentence). Keep replies clear and well-structured. If the visitor asks for ONLY the latest/last project or one specific project, answer ONLY about that requested project — do not list other unrelated projects unless asked.`
   );
   return lines.join('\n\n');
 }
@@ -807,6 +819,22 @@ function selectContextActionButtons(message, socialLinks) {
 function selectRelevantProjects(message, ghData, intent) {
   if (!intent.needsGitHub || !ghData?.repos?.length) return [];
   const m = String(message || '').toLowerCase();
+
+  // If user asks specifically for only the latest/last project, return only 1 card
+  const asksOnlyLatest =
+    /(?:last|latest|recent|newest|आखिरी|अंतिम|लेटेस्ट|हालिया|सबसे नया)\s*(?:wala|वाला|project|प्रोजेक्ट|repo)?/i.test(
+      m
+    ) && !/all|sabhi|सभी|सारे|projects|प्रोजेक्ट्स|list|दिखाओ सब/i.test(m);
+
+  if (asksOnlyLatest) {
+    return ghData.repos.slice(0, 1);
+  }
+
+  // If user mentions a specific repo name, show only matching repo(s)
+  const nameMatches = ghData.repos.filter((r) => m.includes(String(r.name || '').toLowerCase()));
+  if (nameMatches.length > 0) {
+    return nameMatches.slice(0, 2);
+  }
 
   const filtered = ghData.repos.filter((r) => {
     const hay = `${r.name} ${r.description} ${r.tags.join(' ')}`.toLowerCase();
