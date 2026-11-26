@@ -654,7 +654,7 @@ export default function App() {
 
       const contentType = res.headers.get('content-type') || '';
       const voiceSource = res.headers.get('x-voice-source') || '';
-      const playbackRate = Number(res.headers.get('x-playback-rate') || 1.14);
+      const playbackRate = Number(res.headers.get('x-playback-rate') || 1.12);
 
       if (!res.ok || !contentType.includes('audio/mpeg')) {
         return null;
@@ -689,7 +689,7 @@ export default function App() {
         if ('preservesPitch' in audio) audio.preservesPitch = true;
         audioPlayerRef.current = audio;
 
-        // Gentle studio warmth + de-harshing EQ (softens harsh 3.6kHz edge & smooths volume spikes)
+        // Open, Fresh Podcast EQ (removes closed-room boxiness & adds natural crisp presence)
         let sourceNode = null;
         try {
           const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -704,33 +704,43 @@ export default function App() {
 
             sourceNode = ctx.createMediaElementSource(audio);
 
-            const warmthLow = ctx.createBiquadFilter();
-            warmthLow.type = 'lowshelf';
-            warmthLow.frequency.value = 210;
-            warmthLow.gain.value = 2.0;
+            // Clean low-end rumble so it doesn't sound boom-y or closed-in
+            const cleanLowCut = ctx.createBiquadFilter();
+            cleanLowCut.type = 'highpass';
+            cleanLowCut.frequency.value = 85;
 
-            const deHarshMid = ctx.createBiquadFilter();
-            deHarshMid.type = 'peaking';
-            deHarshMid.frequency.value = 3600;
-            deHarshMid.Q.value = 1.4;
-            deHarshMid.gain.value = -3.5;
+            // Remove "closed room / boxy" resonance around 280Hz
+            const deBoxMid = ctx.createBiquadFilter();
+            deBoxMid.type = 'peaking';
+            deBoxMid.frequency.value = 280;
+            deBoxMid.Q.value = 1.2;
+            deBoxMid.gain.value = -2.2;
 
-            const silkHigh = ctx.createBiquadFilter();
-            silkHigh.type = 'highshelf';
-            silkHigh.frequency.value = 7600;
-            silkHigh.gain.value = -2.2;
+            // Gentle touch on harshness only (keeps clarity alive)
+            const gentleDeHarsh = ctx.createBiquadFilter();
+            gentleDeHarsh.type = 'peaking';
+            gentleDeHarsh.frequency.value = 3400;
+            gentleDeHarsh.Q.value = 1.6;
+            gentleDeHarsh.gain.value = -1.2;
+
+            // Fresh open "air" boost for engaging, lively voice presence
+            const openAirHigh = ctx.createBiquadFilter();
+            openAirHigh.type = 'highshelf';
+            openAirHigh.frequency.value = 6500;
+            openAirHigh.gain.value = 1.8;
 
             const compressor = ctx.createDynamicsCompressor();
-            compressor.threshold.value = -16;
-            compressor.knee.value = 18;
-            compressor.ratio.value = 2.5;
-            compressor.attack.value = 0.01;
-            compressor.release.value = 0.18;
+            compressor.threshold.value = -14;
+            compressor.knee.value = 20;
+            compressor.ratio.value = 2.0;
+            compressor.attack.value = 0.012;
+            compressor.release.value = 0.16;
 
             sourceNode
-              .connect(warmthLow)
-              .connect(deHarshMid)
-              .connect(silkHigh)
+              .connect(cleanLowCut)
+              .connect(deBoxMid)
+              .connect(gentleDeHarsh)
+              .connect(openAirHigh)
               .connect(compressor)
               .connect(ctx.destination);
           }

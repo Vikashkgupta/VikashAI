@@ -29,11 +29,11 @@ function analyzeConversationalTone(text) {
   ) {
     return {
       mood: 'empathetic',
-      fishSpeed: 0.94,
-      fishVolume: -2,
-      temperature: 0.36,
-      topP: 0.54,
-      playbackRate: 1.04
+      fishSpeed: 1.0,
+      fishVolume: 0,
+      temperature: 0.54,
+      topP: 0.66,
+      playbackRate: 1.06
     };
   }
 
@@ -44,21 +44,21 @@ function analyzeConversationalTone(text) {
   ) {
     return {
       mood: 'warm_excited',
-      fishSpeed: 0.98,
-      fishVolume: -1,
-      temperature: 0.44,
-      topP: 0.6,
-      playbackRate: 1.08
+      fishSpeed: 1.07,
+      fishVolume: 0,
+      temperature: 0.68,
+      topP: 0.78,
+      playbackRate: 1.12
     };
   }
 
   return {
     mood: 'conversational',
-    fishSpeed: 0.95,
-    fishVolume: -1,
-    temperature: 0.4,
-    topP: 0.56,
-    playbackRate: 1.06
+    fishSpeed: 1.04,
+    fishVolume: 0,
+    temperature: 0.62,
+    topP: 0.72,
+    playbackRate: 1.09
   };
 }
 
@@ -67,7 +67,7 @@ const HINDI_0_TO_99 = [
   'दस', 'ग्यारह', 'बारह', 'तेरह', 'चौदह', 'पंद्रह', 'सोलह', 'सत्रह', 'अठारह', 'उन्नीस',
   'बीस', 'इक्कीस', 'बाईस', 'तेईस', 'चौबीस', 'पच्चीस', 'छब्बीस', 'सत्ताईस', 'अट्ठाईस', 'उनतीस',
   'तीस', 'इकतीस', 'बत्तीस', 'तैंतीस', 'चौंतीस', 'पैंतीस', 'छत्तीस', 'सैंतीस', 'अड़तीस', 'उनतालीस',
-  'चालीस', 'इकतालीस', 'बयालीस', 'तैंतालीस', 'चवालीस', 'पैंतालीस', 'छियालीस', 'सैंतालीस', 'अड़तालीस', 'उनचास',
+  'चालीस', 'इकतालीस', 'बयालीस', 'तैंतीस', 'चवालीस', 'पैंतीस', 'छियालीस', 'सैंतालीस', 'अड़तालीस', 'उनचास',
   'पचास', 'इक्यावन', 'बावन', 'तिरेपन', 'चौवन', 'पचपन', 'छप्पन', 'सत्तावन', 'अट्ठावन', 'उनसठ',
   'साठ', 'इकसठ', 'बासठ', 'तिरसठ', 'चौंसठ', 'पैंसठ', 'छियासठ', 'सड़सठ', 'अड़सठ', 'उनहत्तर',
   'सत्तर', 'इकहत्तर', 'बहत्तर', 'तिहत्तर', 'चौहत्तर', 'पचहत्तर', 'छिहत्तर', 'सतहत्तर', 'अठहत्तर', 'उनासी',
@@ -133,8 +133,8 @@ function numberToHindiWords(rawNum) {
 }
 
 /**
- * Strips URLs, emails, emojis, LaTeX, and markdown symbols while adding natural
- * breath pauses and language-aware number/currency normalization (Hindi vs English).
+ * Strips URLs, emails, emojis, LaTeX, and markdown symbols while keeping lively
+ * conversational rhythm and language-aware number/currency pronunciation.
  */
 function shapeConversationalText(raw) {
   let text = String(raw || '')
@@ -158,8 +158,11 @@ function shapeConversationalText(raw) {
   const isHindiOrHinglish = detectHindiOrHinglish(text);
 
   if (isHindiOrHinglish) {
-    // Convert temperature, currency, %, math symbols & standalone numbers into pure spoken Hindi
+    // Convert temperature, currency, %, math symbols, acronyms & numbers into crisp spoken Hindi
     text = text
+      .replace(/\bAIML\b/g, 'ए आई एम एल')
+      .replace(/\bAI\s*&\s*ML\b/gi, 'ए आई एंड एम एल')
+      .replace(/\bSagar\b/g, 'सागर')
       .replace(/(\d+(?:\.\d+)?)\s*°\s*C\b/gi, (_, num) => `${numberToHindiWords(num)} डिग्री सेल्सियस`)
       .replace(/(\d+(?:\.\d+)?)\s*°\s*F\b/gi, (_, num) => `${numberToHindiWords(num)} डिग्री फ़ारेनहाइट`)
       .replace(/₹\s*(\d[\d,.]*)/g, (_, num) => `${numberToHindiWords(num)} रुपये`)
@@ -168,22 +171,21 @@ function shapeConversationalText(raw) {
       .replace(/\s*=\s*/g, ' बराबर ')
       .replace(/(?<![A-Za-z0-9._-])(\d+(?:,\d+)*(?:\.\d+)?)(?![A-Za-z0-9._-])/g, (_, num) =>
         numberToHindiWords(num)
-      )
-      // Soften exclamation marks so Fish Audio never spikes into a harsh/loud tone
-      .replace(/!+/g, '।');
+      );
   } else {
     // Keep English digits intact and use clean English units/words
     text = text
+      .replace(/\bAIML\b/g, 'A I M L')
       .replace(/(\d+(?:\.\d+)?)\s*°\s*C\b/gi, '$1 degrees Celsius')
       .replace(/(\d+(?:\.\d+)?)\s*°\s*F\b/gi, '$1 degrees Fahrenheit')
       .replace(/₹\s*(\d[\d,.]*)/g, '$1 rupees')
       .replace(/(\d[\d,.]*)\s*%/g, '$1 percent')
       .replace(/\s*×\s*/g, ' times ')
-      .replace(/\s*=\s*/g, ' equals ')
-      .replace(/!+/g, '.');
+      .replace(/\s*=\s*/g, ' equals ');
   }
 
   return text
+    .replace(/!{2,}/g, '!')
     .replace(/[—–]/g, ', ')
     .replace(/^-{3,}$/gm, ' ')
     .replace(/#{1,6}\s+/g, ' ')
@@ -310,7 +312,6 @@ function prepareTextForHindiTTS(text) {
 
 async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
   const controller = new AbortController();
-  // 8.5s timeout per short chunk guarantees Priority 2 fallback still has time before Netlify's 10s gateway limit
   const timeoutId = setTimeout(() => controller.abort(), 8500);
 
   try {
@@ -327,7 +328,7 @@ async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
         reference_id: voiceId,
         format: 'mp3',
         mp3_bitrate: 192,
-        chunk_length: 220,
+        chunk_length: 200,
         normalize: true,
         latency: 'normal',
         temperature: tone.temperature,
