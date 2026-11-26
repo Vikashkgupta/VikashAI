@@ -29,11 +29,11 @@ function analyzeConversationalTone(text) {
   ) {
     return {
       mood: 'empathetic',
-      fishSpeed: 0.96,
+      fishSpeed: 0.94,
       fishVolume: -2,
-      temperature: 0.5,
-      topP: 0.65,
-      playbackRate: 1.06
+      temperature: 0.42,
+      topP: 0.58,
+      playbackRate: 1.04
     };
   }
 
@@ -44,26 +44,27 @@ function analyzeConversationalTone(text) {
   ) {
     return {
       mood: 'warm_excited',
-      fishSpeed: 1.02,
-      fishVolume: 0,
-      temperature: 0.6,
-      topP: 0.72,
-      playbackRate: 1.14
+      fishSpeed: 0.99,
+      fishVolume: -1,
+      temperature: 0.52,
+      topP: 0.65,
+      playbackRate: 1.1
     };
   }
 
   return {
     mood: 'conversational',
-    fishSpeed: 0.98,
+    fishSpeed: 0.96,
     fishVolume: -1,
-    temperature: 0.55,
-    topP: 0.68,
-    playbackRate: 1.12
+    temperature: 0.48,
+    topP: 0.62,
+    playbackRate: 1.08
   };
 }
 
 /**
- * Strips ONLY URLs, emails, emojis, LaTeX, and markdown symbols without ever eating normal words.
+ * Strips URLs, emails, emojis, LaTeX, and markdown symbols while adding natural
+ * breath pauses between headings/bullets and normalizing ₹ / % for smoother speech.
  */
 function shapeConversationalText(raw) {
   return String(raw || '')
@@ -76,9 +77,17 @@ function shapeConversationalText(raw) {
     .replace(/\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g, ' ')
     .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u200D]/gu, ' ')
     .replace(/\\(?:text|mathbf|frac|times)\b/g, ' ')
-    .replace(/[*_`~>•|$\\{}]/g, ' ')
+    .replace(/₹\s*(\d[\d,.]*)/g, '$1 रुपये')
+    .replace(/(\d[\d,.]*)\s*%/g, '$1 प्रतिशत')
+    .replace(/[—–]/g, ', ')
     .replace(/^-{3,}$/gm, ' ')
     .replace(/#{1,6}\s+/g, ' ')
+    .replace(/:\s*\n+/g, ', ')
+    .replace(/\n+\s*[•\-*]\s*/g, ', ')
+    .replace(/\n+/g, '. ')
+    .replace(/[*_`~>•|$\\{}]/g, ' ')
+    .replace(/([।.!?])\s*[.,]+/g, '$1 ')
+    .replace(/\s*,\s*,+/g, ', ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 600);
@@ -213,6 +222,8 @@ async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
         reference_id: voiceId,
         format: 'mp3',
         mp3_bitrate: 192,
+        chunk_length: 200,
+        normalize: true,
         latency: 'balanced',
         temperature: tone.temperature,
         top_p: tone.topP,
