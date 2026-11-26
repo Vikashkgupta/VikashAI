@@ -188,11 +188,17 @@ function classifyUserIntent(message, chatMode = 'default') {
       m
     );
 
+  const asksAboutVikash =
+    /vikash|विकास|tumhara|tumhare|aapka|aapke|unka|unke|his|your|portfolio|resume|cv/i.test(m);
+
+  // Trigger GitHub project cards ONLY for Vikash's projects / GitHub / portfolio (NOT generic coding questions)
   const needsGitHub =
     chatMode === 'recruiter' ||
-    /project|projects|प्रोजेक्ट|github|repo|code|coding|work|portfolio|बनाया|tech stack|mern|react|django|asp\.net|latest commit|repository|skill|skills|resume|cv/i.test(
+    /github|repo|repository|latest commit|portfolio|resume|cv|kshirsagar|laddu ai|artspot|vikashai|vikashbot/i.test(
       m
-    );
+    ) ||
+    (/project|projects|प्रोजेक्ट|बनाया/i.test(m) &&
+      (asksAboutVikash || !/python code|java code|bug|bugs|debug|write code|code likho|program/i.test(m)));
 
   const needsInstagramStats =
     /instagram|insta|इंस्टा|follower|followers|following|post|posts|like|likes|comment|comments|reel|reels|creator/i.test(
@@ -328,7 +334,12 @@ async function fetchGitHubData() {
             stars: Number(r.stargazers_count || 0),
             updatedAt: r.pushed_at || r.updated_at || '',
             githubUrl: r.html_url,
-            liveUrl: r.homepage && /^https?:\/\//i.test(r.homepage) ? r.homepage : ''
+            liveUrl:
+              r.homepage && /^https?:\/\//i.test(r.homepage)
+                ? r.homepage
+                : r.name.toLowerCase() === 'vikashai'
+                ? 'https://vikashaiai.netlify.app'
+                : ''
           }))
       : [];
 
@@ -411,6 +422,7 @@ function getSocialLinks(ghData, igData, customKnowledge) {
   const facebookUrl = String(process.env.FACEBOOK_URL || extra.facebook || '').trim();
   const linkedinUrl = String(process.env.LINKEDIN_URL || extra.linkedin || '').trim();
   const portfolioUrl = String(process.env.PORTFOLIO_URL || extra.portfolio || '').trim();
+  const vikashAiUrl = String(extra.vikashAI || 'https://vikashaiai.netlify.app').trim();
   const linktreeUrl = String(process.env.LINKTREE_URL || extra.linktree || '').trim();
 
   const whatsappRaw = String(process.env.WHATSAPP_NUMBER || '919931890824').replace(/[^\d]/g, '');
@@ -427,6 +439,7 @@ function getSocialLinks(ghData, igData, customKnowledge) {
     facebook: facebookUrl,
     linkedin: linkedinUrl,
     portfolio: portfolioUrl,
+    vikashAI: vikashAiUrl,
     linktree: linktreeUrl,
     whatsapp: whatsappUrl,
     whatsappNumber: whatsappRaw || '919931890824',
@@ -628,9 +641,11 @@ function buildModularSystemPrompt({
 }) {
   const lines = [
     `You are "Vikash AI" — a dual-capability AI: (1) a full-powered Universal AI Assistant, AND (2) the official Personal Assistant of Vikash Kumar Gupta.`,
-    `Style: Friendly, smart, natural conversational Hindi/Hinglish (or pure English if the user asks in English). CRITICAL SCRIPT RULE for Hindi/Hinglish replies: ALWAYS write Hindi words in natural Devanagari script (e.g., "सबसे बड़ा या सबसे छोटा एलिमेंट ढूँढते हैं") and keep English/technical terms in English script (e.g., "Heap Sort", "Binary Tree", "React", "API"). Avoid Romanized Hindi words like "bada", "chota", "dhundhte" so voice pronunciation stays 100% crisp. Keep replies complete and well-formatted.`,
-    `CAPABILITY 1 (UNIVERSAL GENERAL KNOWLEDGE): For ANY general world question (websites/links like DDU Gorakhpur University / AKTU, festivals, coding, study, science, GK, weather, news, math, or everyday advice), ALWAYS answer helpfully using your full general knowledge and Google Search results when available. Write clean URLs like https://ddugu.ac.in/ directly.`,
-    `CAPABILITY 2 (STRICT ANTI-HALLUCINATION FOR VIKASH ONLY): ONLY when answering questions specifically about Vikash Kumar Gupta (his college, degree, schooling, skills, projects, DOB, marks, or personal life), strictly use the verified facts provided below. NEVER invent or guess details about Vikash.`,
+    `STRICT IDENTITY RULE: You are "Vikash AI" (an AI Assistant), NEVER Vikash Kumar Gupta himself. Even if a user asks "अपने बारे में बताओ", introduce yourself as Vikash AI (created by Vikash Kumar Gupta) and ALWAYS refer to Vikash in the THIRD PERSON ("विकास", "वे", "उनका") — NEVER say "मेरा जन्म 6 जून को हुआ" or "मेरे दोस्त का नाम आकाश है".`,
+    `Style & Script Rules: Friendly, smart, natural conversational Hindi/Hinglish (or pure English if the user asks in English). ALWAYS write Hindi words in clean Devanagari script (e.g., "सबसे बड़ा या सबसे छोटा एलिमेंट ढूँढते हैं") and keep English/technical terms in English script (e.g., "Heap Sort", "Binary Tree", "React", "API"). Strictly use ONLY Devanagari and Latin (English) scripts — NEVER output Urdu, Arabic, or Bengali characters.`,
+    `FORMATTING & MATH RULE: NEVER use LaTeX math syntax (no $, \\frac, \\text, \\mathbf, \\times). Write all math in clean plain text (e.g., "800 × 20 / 100 = ₹160"). Keep responses complete and well-structured.`,
+    `CAPABILITY 1 (UNIVERSAL GENERAL KNOWLEDGE): For ANY general world question (websites/links like DDU Gorakhpur University / AKTU, festivals, coding, study, science, GK, weather, news, math, or everyday advice), ALWAYS answer helpfully using your full general knowledge and Google Search results when available. Write clean URLs directly. For weather questions, if the visitor has not shared GPS location and did not mention a city, ask which city's weather they want (or clearly state you are showing Barabanki's weather by default and ask their city).`,
+    `CAPABILITY 2 (STRICT ANTI-HALLUCINATION FOR VIKASH ONLY): ONLY when answering questions specifically about Vikash Kumar Gupta (his college, degree, schooling, skills, projects, DOB, marks, or personal life), strictly use the verified facts provided below. NEVER invent or guess details about Vikash. Keep general/professional intros focused on his education, skills, and projects — mention personal details (like friend Akash, relationship status, or exams) ONLY when the visitor specifically asks about his personal life, friends, or current status.`,
     `CURRENT REAL-WORLD DATE & TIME (IST): ${ist.dateStr}, ${ist.timeStr}`
   ];
 
@@ -720,9 +735,10 @@ function buildModularSystemPrompt({
     lines.push(`INSTAGRAM DATA:\n${igSummary}`);
   }
 
-  if (intent.needsSocialLinks || intent.needsHiringLead) {
+  if (intent.needsSocialLinks || intent.needsHiringLead || intent.needsGitHub) {
     const availableLinks = Object.entries({
       GitHub: socialLinks.github,
+      'Vikash AI Live App': socialLinks.vikashAI,
       Instagram: socialLinks.instagram,
       LinkedIn: socialLinks.linkedin,
       Facebook: socialLinks.facebook,
@@ -738,11 +754,11 @@ function buildModularSystemPrompt({
       .map(([k, v]) => `- ${k}: ${v}`)
       .join('\n');
 
-    lines.push(`VERIFIED LINKS (Only share URLs listed here):\n${availableLinks}`);
+    lines.push(`VERIFIED LINKS (Only share URLs listed here for Vikash):\n${availableLinks}`);
   }
 
   lines.push(
-    `Always finish your thoughts/sentences completely (never cut off mid-sentence). Keep replies clear and concise.`
+    `Always finish your thoughts/sentences completely (never cut off mid-sentence). Keep replies clear and well-structured.`
   );
   return lines.join('\n\n');
 }
@@ -751,7 +767,7 @@ function selectContextActionButtons(message, socialLinks) {
   const m = String(message || '').toLowerCase();
   const btns = [];
 
-  if (/github|repo|code|प्रोजेक्ट|project/i.test(m) && socialLinks.github) {
+  if (/github|repo|प्रोजेक्ट|project/i.test(m) && socialLinks.github) {
     btns.push({ label: 'GitHub Profile', href: socialLinks.github, type: 'GITHUB' });
   }
   if (/instagram|insta|इंस्टा|follower|post|like|comment/i.test(m) && socialLinks.instagram) {
@@ -830,14 +846,14 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
             { role: 'model', parts: [{ text: 'Understood.' }] },
             ...contents
           ],
-          generationConfig: { temperature: 0.45, maxOutputTokens: 1500 }
+          generationConfig: { temperature: 0.45, maxOutputTokens: 4096 }
         }
       : {
           systemInstruction: { parts: [{ text: systemInstruction }] },
           contents,
           generationConfig: {
             temperature: withSearch ? 0.25 : 0.45,
-            maxOutputTokens: 1500
+            maxOutputTokens: 4096
           }
         };
 
@@ -893,7 +909,7 @@ async function openGeminiSSEStream(apiKey, systemInstruction, contents, useSearc
   if (wave1.length > 0) {
     try {
       const winner = await Promise.any(
-        wave1.map((m) => attemptSingleModel(m, useSearch && !m.includes('gemma'), useSearch ? 6000 : 4200))
+        wave1.map((m) => attemptSingleModel(m, useSearch && !m.includes('gemma'), useSearch ? 6500 : 4500))
       );
       return { ok: true, response: winner.response, modelUsed: winner.modelUsed, failedThisTurn };
     } catch {}
@@ -938,12 +954,12 @@ async function callGeminiBufferedRescue(apiKey, systemInstruction, contents, ski
             { role: 'model', parts: [{ text: 'Understood.' }] },
             ...contents
           ],
-          generationConfig: { temperature: 0.45, maxOutputTokens: 1500 }
+          generationConfig: { temperature: 0.45, maxOutputTokens: 4096 }
         }
       : {
           systemInstruction: { parts: [{ text: systemInstruction }] },
           contents,
-          generationConfig: { temperature: 0.45, maxOutputTokens: 1500 }
+          generationConfig: { temperature: 0.45, maxOutputTokens: 4096 }
         };
 
     try {
@@ -1064,7 +1080,7 @@ export default async (req) => {
         body.chatMode === 'recruiter'
           ? 'The visitor opened Portfolio/Recruiter mode.'
           : 'The visitor opened Vikash AI personal assistant.';
-      const prompt = `Generate a fresh, warm, 1-line Hindi/Hinglish welcome greeting (max 14 words) for "Vikash AI" (Personal Assistant of Vikash Kumar Gupta). ${modeHint} Today is ${ist.dateStr}, ${ist.timeStr}. No markdown, just 1 crisp friendly line.`;
+      const prompt = `Generate a fresh, warm, 1-line Hindi/Hinglish welcome greeting (max 14 words) for "Vikash AI" (Personal Assistant of Vikash Kumar Gupta). ${modeHint} Today is ${ist.dateStr}, ${ist.timeStr}. Write Hindi words in Devanagari and English words in English. No markdown, just 1 crisp friendly line.`;
 
       const rescue = await callGeminiBufferedRescue(
         apiKey,

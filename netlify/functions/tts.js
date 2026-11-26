@@ -63,10 +63,10 @@ function analyzeConversationalTone(text) {
 }
 
 /**
- * Strips ONLY URLs, emails, emojis, and markdown symbols without ever eating normal words.
+ * Strips ONLY URLs, emails, emojis, LaTeX, and markdown symbols without ever eating normal words.
  */
 function shapeConversationalText(raw) {
-  let clean = String(raw || '')
+  return String(raw || '')
     .replace(/\[([^\]]+)\]\((?:https?:\/\/|tel:|mailto:)[^)]+\)/gi, '$1')
     .replace(/(?:https?:\/\/|www\.|tel:|mailto:)\S+/gi, ' ')
     .replace(
@@ -75,13 +75,13 @@ function shapeConversationalText(raw) {
     )
     .replace(/\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g, ' ')
     .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u200D]/gu, ' ')
-    .replace(/[*_`~>•|]/g, ' ')
+    .replace(/\\(?:text|mathbf|frac|times)\b/g, ' ')
+    .replace(/[*_`~>•|$\\{}]/g, ' ')
+    .replace(/^-{3,}$/gm, ' ')
     .replace(/#{1,6}\s+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 1200);
-
-  return clean;
+    .slice(0, 600);
 }
 
 const HINGLISH_TO_HINDI_MAP = {
@@ -196,7 +196,8 @@ function prepareTextForHindiTTS(text) {
 
 async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 22000);
+  // 8s timeout per short chunk guarantees Priority 2 fallback still has time before Netlify's 10s gateway limit
+  const timeoutId = setTimeout(() => controller.abort(), 8000);
 
   try {
     const res = await fetch('https://api.fish.audio/v1/tts', {
@@ -274,7 +275,7 @@ async function synthesizeHindiNeuralStream(text) {
   }
   if (current) chunks.push(current);
 
-  const limitedChunks = chunks.slice(0, 7);
+  const limitedChunks = chunks.slice(0, 5);
   if (limitedChunks.length === 0) return null;
 
   try {
@@ -317,7 +318,6 @@ export default async (req) => {
   const fishApiKey = String(process.env.FISH_API_KEY || '').trim();
   const fishVoiceId = String(process.env.FISH_VOICE_ID || '').trim();
 
-  // Live Diagnostic Endpoint: open /.netlify/functions/tts?debug=1 in browser
   if (req.method === 'GET') {
     const url = new URL(req.url);
     if (url.searchParams.get('debug') === '1') {

@@ -45,6 +45,45 @@ function getDetectedChatMode() {
   }
 }
 
+/**
+ * Splits long text into natural sentence-boundary chunks (~230 chars)
+ * so Fish Audio / Fallback TTS starts in ~1-2s and NEVER hits Netlify timeouts!
+ */
+function splitTextIntoSpeechChunks(text, maxLen = 230) {
+  const sentences = String(text || '')
+    .split(/(?<=[।.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const chunks = [];
+  let current = '';
+
+  for (const s of sentences) {
+    if ((current + ' ' + s).trim().length <= maxLen) {
+      current = (current + ' ' + s).trim();
+    } else {
+      if (current) chunks.push(current);
+      if (s.length > maxLen) {
+        const words = s.split(/\s+/);
+        let part = '';
+        for (const w of words) {
+          if ((part + ' ' + w).trim().length <= maxLen) {
+            part = (part + ' ' + w).trim();
+          } else {
+            if (part) chunks.push(part);
+            part = w;
+          }
+        }
+        current = part;
+      } else {
+        current = s;
+      }
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
 function ActionChipIcon({ type }) {
   const t = String(type || '').toUpperCase();
   if (t === 'GITHUB') {
@@ -95,7 +134,9 @@ function ActionChipIcon({ type }) {
 }
 
 function renderInlineMarkdown(rawText) {
-  const sanitizedInput = String(rawText || '').replace(/__(?:MD)?LINK_\d+__/g, '');
+  const sanitizedInput = String(rawText || '')
+    .replace(/__(?:MD)?LINK_\d+__/g, '')
+    .replace(/\$([^$]+)\$/g, '$1');
   const tokens = [];
 
   const pushToken = (label, url) => {
@@ -129,7 +170,7 @@ function renderInlineMarkdown(rawText) {
     }
   );
 
-  const parts = step3.split(/(\[\[LINKTOKEN_\d+\]\]|\*\*[^*]+\*\*)/g);
+  const parts = step3.split(/(\[\[LINKTOKEN_\d+\]\]|\*\*[^*]+\*\*|\*[^*\n]+\*)/g);
   return parts.map((part, i) => {
     const linkMatch = part.match(/^\[\[LINKTOKEN_(\d+)\]\]$/);
     if (linkMatch) {
@@ -155,6 +196,13 @@ function renderInlineMarkdown(rawText) {
         </strong>
       );
     }
+    if (part.startsWith('*') && part.endsWith('*') && part.length > 2) {
+      return (
+        <em key={i} className="italic text-neutral-800">
+          {part.slice(1, -1)}
+        </em>
+      );
+    }
     return <React.Fragment key={i}>{part}</React.Fragment>;
   });
 }
@@ -166,6 +214,23 @@ function FormattedMessage({ text }) {
       {lines.map((line, idx) => {
         const trimmed = line.trim();
         if (!trimmed) return <div key={idx} className="h-2" />;
+        if (/^[-*_]{3,}$/.test(trimmed)) {
+          return <hr key={idx} className="my-2.5 border-neutral-200" />;
+        }
+        const headingMatch = trimmed.match(/^(#{1,4})\s+(.+)$/);
+        if (headingMatch) {
+          const level = headingMatch[1].length;
+          return (
+            <h4
+              key={idx}
+              className={`font-semibold text-neutral-900 pt-1.5 ${
+                level <= 2 ? 'text-[15.5px]' : 'text-[14.5px]'
+              }`}
+            >
+              {renderInlineMarkdown(headingMatch[2])}
+            </h4>
+          );
+        }
         if (trimmed.startsWith('•') || trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
           return (
             <div key={idx} className="flex items-start gap-2 pl-1 leading-relaxed">
@@ -286,10 +351,9 @@ export default function App() {
   const messagesEndRef = useRef(null);
   const userScrolledUpRef = useRef(false);
   const audioPlayerRef = useRef(null);
-  const audioCtxRef = useRef(null);
-  const activePitchNodesRef = useRef(null);
   const audioCacheRef = useRef(new Map());
-  const serverTtsFailedRef = useRef(false);
+  const ttsPlayTokenRef = useRef(0);
+  const ttsAbortRef = useRef(null);
   const cachedVoicesRef = useRef([]);
   const [loadingAudioMsgId, setLoadingAudioMsgId] = useState(null);
 
@@ -427,7 +491,6 @@ export default function App() {
     restoreOrGreet();
   }, [sessionId]);
 
-  // Preload browser speech voices & silently check GPS permission if already granted
   useEffect(() => {
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       const loadVoices = () => {
@@ -548,19 +611,16 @@ export default function App() {
     }
   };
 
-  const cleanupPitchNodes = () => {
-    try {
-      if (activePitchNodesRef.current) {
-        activePitchNodesRef.current.stop();
-        activePitchNodesRef.current = null;
-      }
-    } catch {}
-  };
-
   const stopAllAudio = () => {
+    ttsPlayTokenRef.current += 1;
     try {
-      cleanupPitchNodes();
+      if (ttsAbortRef.current) {
+        ttsAbortRef.current.abort();
+        ttsAbortRef.current = null;
+      }
       if (audioPlayerRef.current) {
+        audioPlayerRef.current.onended = null;
+        audioPlayerRef.current.onerror = null;
         audioPlayerRef.current.pause();
         audioPlayerRef.current.currentTime = 0;
         audioPlayerRef.current = null;
@@ -573,136 +633,123 @@ export default function App() {
     setLoadingAudioMsgId(null);
   };
 
-  /**
-   * Plays server audio directly with exact speed & emotion:
-   * - Priority 1 (Fish Audio): plays Vikash's real cloned male voice directly
-   * - Priority 2 (Fallback): plays the clean, natural Indian-accented female voice
-   *   directly with zero artificial pitch distortion.
-   */
-  const playServerAudio = async (blobUrl, rate, msgId, cleanText) => {
-    cleanupPitchNodes();
-    const audio = new Audio(blobUrl);
-    audio.playbackRate = rate || 1.14;
-    if ('preservesPitch' in audio) audio.preservesPitch = true;
-    audioPlayerRef.current = audio;
+  const fetchTtsChunk = async (chunkText, signal) => {
+    const cached = audioCacheRef.current.get(chunkText);
+    if (cached) return cached;
 
-    setSpeakingMsgId(msgId);
-    audio.onended = () => {
-      setSpeakingMsgId(null);
-    };
-    audio.onerror = () => {
-      speakWithBrowserFallback(msgId, cleanText);
-    };
-    await audio.play();
+    const localCtrl = new AbortController();
+    const timer = setTimeout(() => localCtrl.abort(), 11500);
+    const onOuterAbort = () => localCtrl.abort();
+    if (signal) signal.addEventListener('abort', onOuterAbort, { once: true });
+
+    try {
+      const res = await fetch(TTS_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: localCtrl.signal,
+        body: JSON.stringify({ text: chunkText })
+      });
+      clearTimeout(timer);
+
+      const contentType = res.headers.get('content-type') || '';
+      const voiceSource = res.headers.get('x-voice-source') || '';
+      const playbackRate = Number(res.headers.get('x-playback-rate') || 1.14);
+
+      if (!res.ok || !contentType.includes('audio/mpeg')) {
+        return null;
+      }
+
+      const blob = await res.blob();
+      if (!blob || blob.size < 200) return null;
+
+      const blobUrl = URL.createObjectURL(blob);
+      const finalRate = voiceSource === 'fish-audio-custom' ? 1.0 : playbackRate;
+      const entry = { url: blobUrl, rate: finalRate, source: voiceSource };
+      audioCacheRef.current.set(chunkText, entry);
+      console.info('[Vikash AI TTS]:', voiceSource || 'server-audio', '| rate:', finalRate);
+      return entry;
+    } catch {
+      clearTimeout(timer);
+      return null;
+    } finally {
+      if (signal) signal.removeEventListener('abort', onOuterAbort);
+    }
   };
 
-  const speakWithBrowserFallback = (msgId, cleanText) => {
-    try {
-      if (!('speechSynthesis' in window)) {
-        showToast('इस ब्राउज़र में वॉइस रीडिंग उपलब्ध नहीं है');
-        setSpeakingMsgId(null);
+  const playAudioBlobPromise = (entry, playToken) =>
+    new Promise((resolve) => {
+      if (ttsPlayTokenRef.current !== playToken) {
+        resolve('stopped');
         return;
       }
-      window.speechSynthesis.cancel();
+      try {
+        const audio = new Audio(entry.url);
+        audio.playbackRate = entry.rate || 1.14;
+        if ('preservesPitch' in audio) audio.preservesPitch = true;
+        audioPlayerRef.current = audio;
 
-      const startSpeaking = (voiceList) => {
-        // Strictly pick true Hindi (hi-IN) voices first — NEVER let en-IN (Ravi/Prabhat) skip Devanagari words!
-        const hindiMaleVoice = voiceList.find(
-          (v) => /hi-in/i.test(v.lang) && /madhur|hemant|male/i.test(v.name)
-        );
-        const anyHindiVoice = voiceList.find(
+        const finish = (status) => {
+          audio.onended = null;
+          audio.onerror = null;
+          if (audioPlayerRef.current === audio) audioPlayerRef.current = null;
+          resolve(status);
+        };
+
+        audio.onended = () => finish('ended');
+        audio.onerror = () => finish('error');
+        audio.play().catch(() => finish('error'));
+      } catch {
+        resolve('error');
+      }
+    });
+
+  const speakChunkWithBrowserFallback = (chunkText, playToken) =>
+    new Promise((resolve) => {
+      if (ttsPlayTokenRef.current !== playToken || !('speechSynthesis' in window)) {
+        resolve();
+        return;
+      }
+      try {
+        window.speechSynthesis.cancel();
+        const voiceList =
+          cachedVoicesRef.current.length > 0
+            ? cachedVoicesRef.current
+            : window.speechSynthesis.getVoices() || [];
+
+        const hindiVoice = voiceList.find(
           (v) => /hi-in/i.test(v.lang) || /hindi|हिन्दी/i.test(v.name)
         );
-        const chosenVoice = hindiMaleVoice || anyHindiVoice;
-
-        // Only convert Hinglish words to Devanagari if the chosen voice truly supports hi-IN!
-        const isTrueHindiVoice = Boolean(
-          chosenVoice && (/hi-in/i.test(chosenVoice.lang) || /hindi|हिन्दी/i.test(chosenVoice.name))
-        );
-
-        const spokenText = isTrueHindiVoice
-          ? cleanText.replace(/\b([a-zA-Z]+)\b/g, (w) => {
-              const map = {
-                main: 'मैं',
-                mai: 'मैं',
-                hoon: 'हूँ',
-                hu: 'हूँ',
-                hai: 'है',
-                hain: 'हैं',
-                kaise: 'कैसे',
-                kya: 'क्या',
-                kaun: 'कौन',
-                karu: 'करूँ',
-                karoon: 'करूँ',
-                aap: 'आप',
-                aapka: 'आपका',
-                aapki: 'आपकी',
-                mera: 'मेरा',
-                meri: 'मेरी',
-                aur: 'और',
-                nahi: 'नहीं',
-                nhi: 'नहीं',
-                haan: 'हाँ',
-                batao: 'बताओ',
-                bataiye: 'बताइए',
-                jaanna: 'जानना',
-                baare: 'बारे',
-                mein: 'में',
-                me: 'में',
-                se: 'से',
-                ko: 'को',
-                ka: 'का',
-                ki: 'की',
-                ke: 'के'
-              };
-              return map[w.toLowerCase()] || w;
-            })
-          : cleanText;
-
-        const utter = new SpeechSynthesisUtterance(spokenText);
-        if (chosenVoice) {
-          utter.voice = chosenVoice;
-          utter.lang = chosenVoice.lang || 'hi-IN';
+        const utter = new SpeechSynthesisUtterance(chunkText);
+        if (hindiVoice) {
+          utter.voice = hindiVoice;
+          utter.lang = hindiVoice.lang || 'hi-IN';
         } else {
           utter.lang = 'hi-IN';
         }
+        utter.rate = 1.12;
+        utter.pitch = 1.0;
 
-        // Fast, crisp conversational pace
-        utter.rate = 1.14;
-        utter.pitch = hindiMaleVoice ? 0.96 : 0.92;
-        utter.onend = () => setSpeakingMsgId(null);
-        utter.onerror = () => setSpeakingMsgId(null);
-
-        setSpeakingMsgId(msgId);
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(safetyTimer);
+          resolve();
+        };
+        const safetyTimer = setTimeout(done, Math.max(8000, chunkText.length * 110));
+        utter.onend = done;
+        utter.onerror = done;
         window.speechSynthesis.speak(utter);
-      };
-
-      const available =
-        cachedVoicesRef.current.length > 0
-          ? cachedVoicesRef.current
-          : window.speechSynthesis.getVoices() || [];
-
-      if (available.length > 0) {
-        startSpeaking(available);
-      } else {
-        setSpeakingMsgId(msgId);
-        setTimeout(() => {
-          const retryVoices = window.speechSynthesis.getVoices() || [];
-          if (retryVoices.length > 0) cachedVoicesRef.current = retryVoices;
-          startSpeaking(retryVoices);
-        }, 120);
+      } catch {
+        resolve();
       }
-    } catch {
-      setSpeakingMsgId(null);
-    }
-  };
+    });
 
   const handleSpeakMessage = async (msgId, text) => {
     const isCurrentlyActive = speakingMsgId === msgId || loadingAudioMsgId === msgId;
     stopAllAudio();
     if (isCurrentlyActive) return;
 
-    // Clean ONLY links, emails, emojis, and markdown — NEVER eat normal words!
     const clean = String(text || '')
       .replace(/\[([^\]]+)\]\((?:https?:\/\/|tel:|mailto:)[^)]+\)/gi, '$1')
       .replace(/(?:https?:\/\/|www\.|tel:|mailto:)\S+/gi, ' ')
@@ -712,62 +759,60 @@ export default function App() {
       )
       .replace(/\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g, ' ')
       .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u200D]/gu, ' ')
-      .replace(/[*_`~>•|]/g, ' ')
+      .replace(/\\(?:text|mathbf|frac|times)\b/g, ' ')
+      .replace(/[*_`~>•|$\\{}]/g, ' ')
+      .replace(/^-{3,}$/gm, ' ')
       .replace(/#{1,6}\s+/g, ' ')
       .replace(/\s+/g, ' ')
       .trim();
     if (!clean) return;
 
-    // 1. Play instantly from memory cache (0ms, 0 extra quota spent!)
-    const cachedEntry = audioCacheRef.current.get(clean);
-    if (cachedEntry) {
-      playServerAudio(
-        cachedEntry.url,
-        cachedEntry.rate || 1.14,
-        msgId,
-        clean
-      ).catch(() => speakWithBrowserFallback(msgId, clean));
-      return;
-    }
+    const chunks = splitTextIntoSpeechChunks(clean, 230);
+    if (chunks.length === 0) return;
 
-    // 2. If server TTS is unavailable, fall back cleanly to browser Hindi voice
-    if (serverTtsFailedRef.current) {
-      speakWithBrowserFallback(msgId, clean);
-      return;
-    }
+    const playToken = ttsPlayTokenRef.current;
+    const ctrl = new AbortController();
+    ttsAbortRef.current = ctrl;
 
-    // 3. Try Server TTS (Priority 1: Fish Audio Custom Voice -> Priority 2: Pure Hindi Neural Stream)
+    setLoadingAudioMsgId(msgId);
+
     try {
-      setLoadingAudioMsgId(msgId);
-      const res = await fetch(TTS_API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: clean })
-      });
+      let nextChunkPromise = fetchTtsChunk(chunks[0], ctrl.signal);
 
-      const contentType = res.headers.get('content-type') || '';
-      const voiceSource = res.headers.get('x-voice-source') || '';
-      const playbackRate = Number(res.headers.get('x-playback-rate') || 1.14);
+      for (let i = 0; i < chunks.length; i += 1) {
+        if (ttsPlayTokenRef.current !== playToken) break;
 
-      if (!res.ok || !contentType.includes('audio/mpeg')) {
-        serverTtsFailedRef.current = true;
-        setLoadingAudioMsgId(null);
-        speakWithBrowserFallback(msgId, clean);
-        return;
+        const audioEntry = await nextChunkPromise;
+        if (ttsPlayTokenRef.current !== playToken) break;
+
+        // Prefetch the next chunk in parallel while the current chunk plays!
+        if (i + 1 < chunks.length) {
+          nextChunkPromise = fetchTtsChunk(chunks[i + 1], ctrl.signal);
+        } else {
+          nextChunkPromise = null;
+        }
+
+        if (i === 0) {
+          setLoadingAudioMsgId(null);
+          setSpeakingMsgId(msgId);
+        }
+
+        if (audioEntry) {
+          const playStatus = await playAudioBlobPromise(audioEntry, playToken);
+          if (playStatus === 'stopped' || ttsPlayTokenRef.current !== playToken) break;
+          if (playStatus === 'error') {
+            await speakChunkWithBrowserFallback(chunks[i], playToken);
+          }
+        } else {
+          await speakChunkWithBrowserFallback(chunks[i], playToken);
+        }
       }
-
-      const blob = await res.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const isCustomMale = voiceSource === 'fish-audio-custom';
-      const finalRate = isCustomMale ? 1.0 : playbackRate;
-      audioCacheRef.current.set(clean, { url: blobUrl, rate: finalRate });
-
-      console.info('[Vikash AI TTS]:', voiceSource || 'server-audio', '| rate:', finalRate);
-      setLoadingAudioMsgId(null);
-      await playServerAudio(blobUrl, finalRate, msgId, clean);
-    } catch {
-      setLoadingAudioMsgId(null);
-      speakWithBrowserFallback(msgId, clean);
+    } finally {
+      if (ttsPlayTokenRef.current === playToken) {
+        setLoadingAudioMsgId(null);
+        setSpeakingMsgId(null);
+        ttsAbortRef.current = null;
+      }
     }
   };
 

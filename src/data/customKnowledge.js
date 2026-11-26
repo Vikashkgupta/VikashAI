@@ -7,10 +7,10 @@ export const VIKASH_CUSTOM_KNOWLEDGE = {
   aboutMe: `
 नाम: Vikash Kumar Gupta (विकास कुमार गुप्ता)
 भूमिका: MERN Stack Developer | B.Tech AIML Student | Full-Stack Web & AI Developer
-गृह नगर: Mairwa Dham / Nai Bazar, Mairwa (Siwan), Bihar, India
+गृह नगर: Mairwa Dham Mairwa (Siwan), Bihar, India
 वर्तमान अध्ययन स्थान: Barabanki, Uttar Pradesh, India
 ईमेल: vikashkumargupta1000@gmail.com
-विशेष नोट: मैंने 10वीं (2021) के बाद सीधे 3-वर्षीय पॉलिटेक्निक डिप्लोमा (CSE) किया और फिर लेटरल एंट्री से B.Tech (AIML) कर रहा हूँ (12th नहीं किया है)।
+विशेष नोट: विकास ने 10वीं (2021) के बाद सीधे 3-वर्षीय पॉलिटेक्निक डिप्लोमा (CSE) किया और फिर लेटरल एंट्री से B.Tech (AIML) कर रहे हैं।
   `.trim(),
 
   // 2. संपूर्ण शिक्षा यात्रा (Nursery से B.Tech तक — क्रमवार)
@@ -58,7 +58,7 @@ export const VIKASH_CUSTOM_KNOWLEDGE = {
   trainingsAndAwards: [
     {
       title: '45 Days Summer Training in ASP.NET with MVC',
-      organization: 'Makartaj Private Limited',
+      organization: 'Mecatredz Software and Innovation, Lucknow',
       when: 'After 2nd Year of Diploma (CSE)',
       duration: '45 Days',
       technology: 'ASP.NET with MVC, C#, Web Application Development',
@@ -66,7 +66,7 @@ export const VIKASH_CUSTOM_KNOWLEDGE = {
     },
     {
       title: '45 Days Summer Training in Python with Django',
-      organization: 'SoftPro India',
+      organization: 'SoftPro India, Lucknow',
       when: 'After 1st Year of Diploma (CSE)',
       duration: '45 Days',
       technology: 'Python, Django Web Framework, Backend Development'
@@ -87,16 +87,17 @@ export const VIKASH_CUSTOM_KNOWLEDGE = {
 
   // 5. प्रमुख प्रोजेक्ट्स और उपलब्धियाँ
   highlights: [
-    'Makartaj Private Limited में 45-दिवसीय ASP.NET with MVC ट्रेनिंग के दौरान "Best Performer Award" प्राप्त किया।',
-    'SoftPro India में 45-दिवसीय Python with Django ट्रेनिंग पूरी की।',
+    'Mecatredz Software and Innovation, Lucknow में 45-दिवसीय ASP.NET with MVC ट्रेनिंग के दौरान "Best Performer Award" प्राप्त किया।',
+    'SoftPro India, Lucknow में 45-दिवसीय Python with Django ट्रेनिंग पूरी की।',
     'KshirSagar Sweets & Bakers (Mairwa) — फुल-स्टैक ई-कॉमर्स वेब ऐप और Laddu AI (लाइव लोकेशन व कार्ट कंट्रोलर AI) बनाया।',
-    'Vikash AI — GitHub और Instagram Graph API से जुड़ा लाइव पर्सनल AI असिस्टेंट बनाया।',
+    'Vikash AI (Live: https://vikashaiai.netlify.app) — GitHub, Instagram Graph API और कस्टम वॉइस से जुड़ा लाइव पर्सनल AI असिस्टेंट बनाया।',
     'E-Village Web Application — ASP.NET MVC पर आधारित ग्रामीण डिजिटल सेवा वेब ऐप।',
     'Farmer–Merchant Integration Platform — Python और Django पर आधारित किसान-व्यापारी प्लेटफॉर्म।'
   ],
 
   // 6. प्रोफाइल और सोशल लिंक्स (Verified Contact Info)
   extraProfiles: {
+    vikashAI: 'https://vikashaiai.netlify.app',
     instagram: 'https://www.instagram.com/_vikashkgupta/',
     facebook: 'https://www.facebook.com/vikash.kumar.gupta.289183',
     portfolio: 'https://vikashkumargupta.netlify.app',
@@ -108,11 +109,10 @@ export const VIKASH_CUSTOM_KNOWLEDGE = {
     alternateEmail: 'vikashkumargupta1000@gmail.com'
   },
 
-
   // 7. अतिरिक्त नोट्स (AI के संदर्भ के लिए)
   extraNotes: `
-विकास की शैक्षणिक पृष्ठभूमि स्पष्ट है: Nursery–5th (Girls Primary School, Mairwa Dham, 2015) -> 6th–10th (Sant Digambar Nath Higher Secondary School, Pachrukhiya Balua, Deoria, 2021 में 84.3%) -> 3-Year Diploma in CSE (Government Polytechnic Unnao, 2024 में 70%) -> B.Tech in AIML (Sagar Institute of Technology & Management / Sagar Group of Institutions, Barabanki, AKTU — Pursuing)। विकास ने 12वीं (Intermediate) नहीं की है, बल्कि 10वीं के बाद सीधे डिप्लोमा और फिर B.Tech किया है।
-डिप्लोमा के फर्स्ट ईयर के बाद उन्होंने SoftPro India से 45 दिन की Python with Django ट्रेनिंग की, और सेकंड ईयर के बाद Makartaj Private Limited से 45 दिन की ASP.NET with MVC ट्रेनिंग की जिसमें उन्हें "Best Performer Award" मिला।
-संपर्क व सोशल मीडिया: LinkedIn (linkedin.com/in/vikash-kumargupta), Email (vikashkumargupta1000@gmail.com), Instagram (@_vikashkgupta), Facebook और GitHub।
+विकास की शैक्षणिक पृष्ठभूमि स्पष्ट है: Nursery–5th (Girls Primary School, Mairwa Dham, 2015) -> 6th–10th (Sant Digambar Nath Higher Secondary School, Pachrukhiya Balua, Deoria, 2021 में 84.3%) -> 3-Year Diploma in CSE (Government Polytechnic Unnao, 2024 में 70%) -> B.Tech in AIML (Sagar Institute of Technology & Management / Sagar Group of Institutions, Barabanki, AKTU, 2025 – 2028 — Pursuing)। विकास ने 12वीं (Intermediate) नहीं की है, बल्कि 10वीं के बाद सीधे डिप्लोमा और फिर B.Tech किया है।
+डिप्लोमा के फर्स्ट ईयर के बाद उन्होंने SoftPro India, Lucknow से 45 दिन की Python with Django ट्रेनिंग की, और सेकंड ईयर के बाद Mecatredz Software and Innovation, Lucknow से 45 दिन की ASP.NET with MVC ट्रेनिंग की जिसमें उन्हें "Best Performer Award" मिला।
+संपर्क व सोशल मीडिया: Vikash AI (vikashaiai.netlify.app), LinkedIn (linkedin.com/in/vikash-kumargupta), Email (vikashkumargupta1000@gmail.com), Instagram (@_vikashkgupta), Facebook और GitHub।
   `.trim()
 };
