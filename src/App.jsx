@@ -351,6 +351,7 @@ export default function App() {
   const messagesEndRef = useRef(null);
   const userScrolledUpRef = useRef(false);
   const audioPlayerRef = useRef(null);
+  const audioCtxRef = useRef(null);
   const audioCacheRef = useRef(new Map());
   const ttsPlayTokenRef = useRef(0);
   const ttsAbortRef = useRef(null);
@@ -684,13 +685,65 @@ export default function App() {
       }
       try {
         const audio = new Audio(entry.url);
-        audio.playbackRate = entry.rate || 1.14;
+        audio.playbackRate = entry.rate || 1.1;
         if ('preservesPitch' in audio) audio.preservesPitch = true;
         audioPlayerRef.current = audio;
+
+        // Gentle studio warmth + de-harshing EQ (softens harsh 3.6kHz edge & smooths volume spikes)
+        let sourceNode = null;
+        try {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          if (AudioCtx) {
+            if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+              audioCtxRef.current = new AudioCtx();
+            }
+            const ctx = audioCtxRef.current;
+            if (ctx.state === 'suspended') {
+              ctx.resume().catch(() => {});
+            }
+
+            sourceNode = ctx.createMediaElementSource(audio);
+
+            const warmthLow = ctx.createBiquadFilter();
+            warmthLow.type = 'lowshelf';
+            warmthLow.frequency.value = 210;
+            warmthLow.gain.value = 2.0;
+
+            const deHarshMid = ctx.createBiquadFilter();
+            deHarshMid.type = 'peaking';
+            deHarshMid.frequency.value = 3600;
+            deHarshMid.Q.value = 1.4;
+            deHarshMid.gain.value = -3.5;
+
+            const silkHigh = ctx.createBiquadFilter();
+            silkHigh.type = 'highshelf';
+            silkHigh.frequency.value = 7600;
+            silkHigh.gain.value = -2.2;
+
+            const compressor = ctx.createDynamicsCompressor();
+            compressor.threshold.value = -16;
+            compressor.knee.value = 18;
+            compressor.ratio.value = 2.5;
+            compressor.attack.value = 0.01;
+            compressor.release.value = 0.18;
+
+            sourceNode
+              .connect(warmthLow)
+              .connect(deHarshMid)
+              .connect(silkHigh)
+              .connect(compressor)
+              .connect(ctx.destination);
+          }
+        } catch {
+          // If Web Audio EQ is blocked on any device, audio still plays cleanly directly
+        }
 
         const finish = (status) => {
           audio.onended = null;
           audio.onerror = null;
+          try {
+            if (sourceNode) sourceNode.disconnect();
+          } catch {}
           if (audioPlayerRef.current === audio) audioPlayerRef.current = null;
           resolve(status);
         };

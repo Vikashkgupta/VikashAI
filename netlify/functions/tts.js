@@ -31,8 +31,8 @@ function analyzeConversationalTone(text) {
       mood: 'empathetic',
       fishSpeed: 0.94,
       fishVolume: -2,
-      temperature: 0.42,
-      topP: 0.58,
+      temperature: 0.36,
+      topP: 0.54,
       playbackRate: 1.04
     };
   }
@@ -44,30 +44,100 @@ function analyzeConversationalTone(text) {
   ) {
     return {
       mood: 'warm_excited',
-      fishSpeed: 0.99,
+      fishSpeed: 0.98,
       fishVolume: -1,
-      temperature: 0.52,
-      topP: 0.65,
-      playbackRate: 1.1
+      temperature: 0.44,
+      topP: 0.6,
+      playbackRate: 1.08
     };
   }
 
   return {
     mood: 'conversational',
-    fishSpeed: 0.96,
+    fishSpeed: 0.95,
     fishVolume: -1,
-    temperature: 0.48,
-    topP: 0.62,
-    playbackRate: 1.08
+    temperature: 0.4,
+    topP: 0.56,
+    playbackRate: 1.06
   };
+}
+
+const HINDI_0_TO_99 = [
+  'शून्य', 'एक', 'दो', 'तीन', 'चार', 'पाँच', 'छह', 'सात', 'आठ', 'नौ',
+  'दस', 'ग्यारह', 'बारह', 'तेरह', 'चौदह', 'पंद्रह', 'सोलह', 'सत्रह', 'अठारह', 'उन्नीस',
+  'बीस', 'इक्कीस', 'बाईस', 'तेईस', 'चौबीस', 'पच्चीस', 'छब्बीस', 'सत्ताईस', 'अट्ठाईस', 'उनतीस',
+  'तीस', 'इकतीस', 'बत्तीस', 'तैंतीस', 'चौंतीस', 'पैंतीस', 'छत्तीस', 'सैंतीस', 'अड़तीस', 'उनतालीस',
+  'चालीस', 'इकतालीस', 'बयालीस', 'तैंतालीस', 'चवालीस', 'पैंतालीस', 'छियालीस', 'सैंतालीस', 'अड़तालीस', 'उनचास',
+  'पचास', 'इक्यावन', 'बावन', 'तिरेपन', 'चौवन', 'पचपन', 'छप्पन', 'सत्तावन', 'अट्ठावन', 'उनसठ',
+  'साठ', 'इकसठ', 'बासठ', 'तिरसठ', 'चौंसठ', 'पैंसठ', 'छियासठ', 'सड़सठ', 'अड़सठ', 'उनहत्तर',
+  'सत्तर', 'इकहत्तर', 'बहत्तर', 'तिहत्तर', 'चौहत्तर', 'पचहत्तर', 'छिहत्तर', 'सतहत्तर', 'अठहत्तर', 'उनासी',
+  'अस्सी', 'इक्यासी', 'बयासी', 'तिरासी', 'चौरासी', 'पचासी', 'छियासी', 'सत्तासी', 'अठासी', 'नवासी',
+  'नब्बे', 'इक्यानवे', 'बानवे', 'तिरानवे', 'चौरानवे', 'पचानवे', 'छियानवे', 'सत्तानवे', 'अट्ठानवे', 'निन्यानवे'
+];
+
+/**
+ * Converts a numeric string (Indian numbering system up to 99 crore, with optional decimal)
+ * into natural spoken Hindi words (e.g., "800" -> "आठ सौ", "84.3" -> "चौरासी पॉइंट तीन").
+ */
+function numberToHindiWords(rawNum) {
+  const cleaned = String(rawNum || '').replace(/,/g, '');
+  if (!/^\d+(?:\.\d+)?$/.test(cleaned)) return rawNum;
+
+  const [intStr, decStr] = cleaned.split('.');
+  // Keep phone numbers, OTPs, or leading-zero codes untouched
+  if (intStr.length > 9 || (intStr.length > 1 && intStr.startsWith('0'))) {
+    return rawNum;
+  }
+
+  let n = parseInt(intStr, 10);
+  if (Number.isNaN(n)) return rawNum;
+
+  const parts = [];
+  if (n === 0) {
+    parts.push(HINDI_0_TO_99[0]);
+  } else {
+    const crore = Math.floor(n / 10000000);
+    if (crore > 0) {
+      parts.push(`${HINDI_0_TO_99[crore]} करोड़`);
+      n %= 10000000;
+    }
+    const lakh = Math.floor(n / 100000);
+    if (lakh > 0) {
+      parts.push(`${HINDI_0_TO_99[lakh]} लाख`);
+      n %= 100000;
+    }
+    const thousand = Math.floor(n / 1000);
+    if (thousand > 0) {
+      parts.push(`${HINDI_0_TO_99[thousand]} हज़ार`);
+      n %= 1000;
+    }
+    const hundred = Math.floor(n / 100);
+    if (hundred > 0) {
+      parts.push(`${HINDI_0_TO_99[hundred]} सौ`);
+      n %= 100;
+    }
+    if (n > 0) {
+      parts.push(HINDI_0_TO_99[n]);
+    }
+  }
+
+  let result = parts.join(' ');
+  if (decStr) {
+    const decWords = decStr
+      .split('')
+      .map((d) => HINDI_0_TO_99[parseInt(d, 10)] || d)
+      .join(' ');
+    result += ` पॉइंट ${decWords}`;
+  }
+  return result;
 }
 
 /**
  * Strips URLs, emails, emojis, LaTeX, and markdown symbols while adding natural
- * breath pauses between headings/bullets and normalizing ₹ / % for smoother speech.
+ * breath pauses and language-aware number/currency normalization (Hindi vs English).
  */
 function shapeConversationalText(raw) {
-  return String(raw || '')
+  let text = String(raw || '')
     .replace(/\[([^\]]+)\]\((?:https?:\/\/|tel:|mailto:)[^)]+\)/gi, '$1')
     .replace(/(?:https?:\/\/|www\.|tel:|mailto:)\S+/gi, ' ')
     .replace(
@@ -77,8 +147,43 @@ function shapeConversationalText(raw) {
     .replace(/\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g, ' ')
     .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u200D]/gu, ' ')
     .replace(/\\(?:text|mathbf|frac|times)\b/g, ' ')
-    .replace(/₹\s*(\d[\d,.]*)/g, '$1 रुपये')
-    .replace(/(\d[\d,.]*)\s*%/g, '$1 प्रतिशत')
+    // Prevent awkward mid-word full-stop pauses on dotted tech terms & titles
+    .replace(/\bB\.Tech\b/gi, 'B Tech')
+    .replace(/\bM\.Tech\b/gi, 'M Tech')
+    .replace(/\bDr\./gi, 'Doctor')
+    .replace(/\bASP\.NET\b/gi, 'ASP dot NET')
+    .replace(/\b(Node|React|Express|Next|Vue)\.js\b/gi, '$1 JS')
+    .replace(/\bC#/g, 'C Sharp');
+
+  const isHindiOrHinglish = detectHindiOrHinglish(text);
+
+  if (isHindiOrHinglish) {
+    // Convert temperature, currency, %, math symbols & standalone numbers into pure spoken Hindi
+    text = text
+      .replace(/(\d+(?:\.\d+)?)\s*°\s*C\b/gi, (_, num) => `${numberToHindiWords(num)} डिग्री सेल्सियस`)
+      .replace(/(\d+(?:\.\d+)?)\s*°\s*F\b/gi, (_, num) => `${numberToHindiWords(num)} डिग्री फ़ारेनहाइट`)
+      .replace(/₹\s*(\d[\d,.]*)/g, (_, num) => `${numberToHindiWords(num)} रुपये`)
+      .replace(/(\d[\d,.]*)\s*%/g, (_, num) => `${numberToHindiWords(num)} प्रतिशत`)
+      .replace(/\s*×\s*/g, ' गुणा ')
+      .replace(/\s*=\s*/g, ' बराबर ')
+      .replace(/(?<![A-Za-z0-9._-])(\d+(?:,\d+)*(?:\.\d+)?)(?![A-Za-z0-9._-])/g, (_, num) =>
+        numberToHindiWords(num)
+      )
+      // Soften exclamation marks so Fish Audio never spikes into a harsh/loud tone
+      .replace(/!+/g, '।');
+  } else {
+    // Keep English digits intact and use clean English units/words
+    text = text
+      .replace(/(\d+(?:\.\d+)?)\s*°\s*C\b/gi, '$1 degrees Celsius')
+      .replace(/(\d+(?:\.\d+)?)\s*°\s*F\b/gi, '$1 degrees Fahrenheit')
+      .replace(/₹\s*(\d[\d,.]*)/g, '$1 rupees')
+      .replace(/(\d[\d,.]*)\s*%/g, '$1 percent')
+      .replace(/\s*×\s*/g, ' times ')
+      .replace(/\s*=\s*/g, ' equals ')
+      .replace(/!+/g, '.');
+  }
+
+  return text
     .replace(/[—–]/g, ', ')
     .replace(/^-{3,}$/gm, ' ')
     .replace(/#{1,6}\s+/g, ' ')
@@ -90,7 +195,7 @@ function shapeConversationalText(raw) {
     .replace(/\s*,\s*,+/g, ', ')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 600);
+    .slice(0, 750);
 }
 
 const HINGLISH_TO_HINDI_MAP = {
@@ -205,8 +310,8 @@ function prepareTextForHindiTTS(text) {
 
 async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
   const controller = new AbortController();
-  // 8s timeout per short chunk guarantees Priority 2 fallback still has time before Netlify's 10s gateway limit
-  const timeoutId = setTimeout(() => controller.abort(), 8000);
+  // 8.5s timeout per short chunk guarantees Priority 2 fallback still has time before Netlify's 10s gateway limit
+  const timeoutId = setTimeout(() => controller.abort(), 8500);
 
   try {
     const res = await fetch('https://api.fish.audio/v1/tts', {
@@ -222,9 +327,9 @@ async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
         reference_id: voiceId,
         format: 'mp3',
         mp3_bitrate: 192,
-        chunk_length: 200,
+        chunk_length: 220,
         normalize: true,
-        latency: 'balanced',
+        latency: 'normal',
         temperature: tone.temperature,
         top_p: tone.topP,
         prosody: {
