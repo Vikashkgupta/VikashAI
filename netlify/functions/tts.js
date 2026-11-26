@@ -29,10 +29,10 @@ function analyzeConversationalTone(text) {
   ) {
     return {
       mood: 'empathetic',
-      fishSpeed: 1.0,
-      fishVolume: -1,
-      temperature: 0.65,
-      topP: 0.72,
+      fishSpeed: 0.96,
+      fishVolume: -2,
+      temperature: 0.5,
+      topP: 0.65,
       playbackRate: 1.06
     };
   }
@@ -44,21 +44,21 @@ function analyzeConversationalTone(text) {
   ) {
     return {
       mood: 'warm_excited',
-      fishSpeed: 1.12,
-      fishVolume: 1,
-      temperature: 0.85,
-      topP: 0.85,
-      playbackRate: 1.18
+      fishSpeed: 1.02,
+      fishVolume: 0,
+      temperature: 0.6,
+      topP: 0.72,
+      playbackRate: 1.14
     };
   }
 
   return {
     mood: 'conversational',
-    fishSpeed: 1.1,
-    fishVolume: 0,
-    temperature: 0.76,
-    topP: 0.8,
-    playbackRate: 1.14
+    fishSpeed: 0.98,
+    fishVolume: -1,
+    temperature: 0.55,
+    topP: 0.68,
+    playbackRate: 1.12
   };
 }
 
@@ -212,7 +212,7 @@ async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
         text,
         reference_id: voiceId,
         format: 'mp3',
-        mp3_bitrate: 128,
+        mp3_bitrate: 192,
         latency: 'balanced',
         temperature: tone.temperature,
         top_p: tone.topP,
