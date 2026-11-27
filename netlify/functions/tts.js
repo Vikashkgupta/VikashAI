@@ -12,16 +12,17 @@ const CORS_HEADERS = {
 };
 
 /**
- * 👉 अब सभी Fish Audio Model IDs सीधे netlify/functions/voiceModels.js से लोड होती हैं।
+ * 👉 अब सभी Fish Audio Model IDs सीधे netlify/functions/voiceModels.js से डायनामिकली लोड होती हैं।
  */
 function getFishVoiceModelMap() {
-  return {
-    vikash: String(VOICE_MODEL_IDS.vikash || process.env.FISH_VOICE_ID || '').trim(),
-    naman: String(VOICE_MODEL_IDS.naman || '').trim(),
-    modi: String(VOICE_MODEL_IDS.modi || '').trim(),
-    trump: String(VOICE_MODEL_IDS.trump || '').trim(),
-    amitabh: String(VOICE_MODEL_IDS.amitabh || '').trim()
-  };
+  const map = {};
+  for (const [key, val] of Object.entries(VOICE_MODEL_IDS || {})) {
+    map[String(key).toLowerCase()] = String(val || '').trim();
+  }
+  if (!map.vikash && process.env.FISH_VOICE_ID) {
+    map.vikash = String(process.env.FISH_VOICE_ID).trim();
+  }
+  return map;
 }
 
 function jsonResponse(status, body) {
@@ -31,9 +32,61 @@ function jsonResponse(status, body) {
   });
 }
 
-function analyzeConversationalTone(text) {
+function analyzeConversationalTone(text, isHindi = false, requestedVoice = 'vikash') {
   const t = String(text || '').toLowerCase();
+  const isEnglishOriginVoice = requestedVoice === 'elon' || requestedVoice === 'trump';
+  const isCelebrityVoice = requestedVoice !== 'vikash' && requestedVoice !== 'female';
 
+  // 👉 हिंदी उच्चारण वाला धीमा ट्यून सिर्फ़ सेलिब्रिटी आवाज़ों पर (Vikash और Ananya पहले जैसी परफेक्ट सेटिंग पर रहेंगे)
+  if (isHindi && isCelebrityVoice) {
+    const baseSpeed = isEnglishOriginVoice ? 0.92 : 0.97;
+    const baseTemp = isEnglishOriginVoice ? 0.42 : 0.48;
+    const baseTopP = isEnglishOriginVoice ? 0.6 : 0.65;
+
+    if (
+      /माफ़|सॉरी|sorry|दुख|sad|समस्या|दिक्कत|problem|error|fail|अफसोस|चिंता मत|trouble|issue|down|overload/i.test(
+        t
+      )
+    ) {
+      return {
+        mood: 'empathetic',
+        fishSpeed: Math.max(0.88, baseSpeed - 0.03),
+        fishVolume: 0,
+        temperature: Math.max(0.38, baseTemp - 0.04),
+        topP: Math.max(0.56, baseTopP - 0.04),
+        chunkLength: 160,
+        playbackRate: 1.06
+      };
+    }
+
+    if (
+      /!|कमाल|शानदार|बधाई|congrat|awesome|amazing|great|happy|खुशी|वाह|best performer|award|भाई|यार/i.test(
+        t
+      )
+    ) {
+      return {
+        mood: 'warm_excited',
+        fishSpeed: Math.min(1.01, baseSpeed + 0.03),
+        fishVolume: 0,
+        temperature: Math.min(0.54, baseTemp + 0.05),
+        topP: Math.min(0.7, baseTopP + 0.04),
+        chunkLength: 160,
+        playbackRate: 1.12
+      };
+    }
+
+    return {
+      mood: 'conversational',
+      fishSpeed: baseSpeed,
+      fishVolume: 0,
+      temperature: baseTemp,
+      topP: baseTopP,
+      chunkLength: 160,
+      playbackRate: 1.09
+    };
+  }
+
+  // 👉 Vikash (Default), Ananya और इंग्लिश के लिए पहले वाली परफेक्ट, फ्रेश और नैचुरल सेटिंग्स
   if (
     /माफ़|सॉरी|sorry|दुख|sad|समस्या|दिक्कत|problem|error|fail|अफसोस|चिंता मत|trouble|issue|down|overload/i.test(
       t
@@ -45,6 +98,7 @@ function analyzeConversationalTone(text) {
       fishVolume: 0,
       temperature: 0.54,
       topP: 0.66,
+      chunkLength: 200,
       playbackRate: 1.06
     };
   }
@@ -60,6 +114,7 @@ function analyzeConversationalTone(text) {
       fishVolume: 0,
       temperature: 0.68,
       topP: 0.78,
+      chunkLength: 200,
       playbackRate: 1.12
     };
   }
@@ -70,6 +125,7 @@ function analyzeConversationalTone(text) {
     fishVolume: 0,
     temperature: 0.62,
     topP: 0.72,
+    chunkLength: 200,
     playbackRate: 1.09
   };
 }
@@ -163,7 +219,19 @@ function shapeConversationalText(raw) {
     text = text
       .replace(/\bAIML\b/g, 'ए आई एम एल')
       .replace(/\bAI\s*&\s*ML\b/gi, 'ए आई एंड एम एल')
-      .replace(/\bSagar\b/g, 'सागर')
+      .replace(/\bAKTU\b/gi, 'ए के टी यू')
+      .replace(/\bMERN\b/g, 'मर्न')
+      .replace(/\bGitHub\b/gi, 'गिटहब')
+      .replace(/\bInstagram\b/gi, 'इंस्टाग्राम')
+      .replace(/\bWhatsApp\b/gi, 'व्हाट्सएप')
+      .replace(/\bSagar\b/gi, 'सागर')
+      .replace(/\bBarabanki\b/gi, 'बाराबंकी')
+      .replace(/\bMairwa\b/gi, 'मैरवा')
+      .replace(/\bSiwan\b/gi, 'सिवान')
+      .replace(/\bBihar\b/gi, 'बिहार')
+      .replace(/\bUnnao\b/gi, 'उन्नाव')
+      .replace(/\bDeoria\b/gi, 'देवरिया')
+      .replace(/\bLucknow\b/gi, 'लखनऊ')
       .replace(/(\d+(?:\.\d+)?)\s*°\s*C\b/gi, (_, num) => `${numberToHindiWords(num)} डिग्री सेल्सियस`)
       .replace(/(\d+(?:\.\d+)?)\s*°\s*F\b/gi, (_, num) => `${numberToHindiWords(num)} डिग्री फ़ारेनहाइट`)
       .replace(/₹\s*(\d[\d,.]*)/g, (_, num) => `${numberToHindiWords(num)} रुपये`)
@@ -173,6 +241,9 @@ function shapeConversationalText(raw) {
       .replace(/(?<![A-Za-z0-9._-])(\d+(?:,\d+)*(?:\.\d+)?)(?![A-Za-z0-9._-])/g, (_, num) =>
         numberToHindiWords(num)
       );
+
+    // 👉 हिंदी वाक्यों के बीच बचे हुए हिंग्लिश शब्दों को भी देवनागरी में बदलें ताकि Fish Audio साफ़ उच्चारण करे
+    text = prepareTextForHindiTTS(text);
   } else {
     text = text
       .replace(/\bAIML\b/g, 'A I M L')
@@ -310,9 +381,12 @@ function prepareTextForHindiTTS(text) {
     .replace(/\b([a-zA-Z]+)\b/g, (word) => HINGLISH_TO_HINDI_MAP[word.toLowerCase()] || word);
 }
 
-async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
+async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId, isHindi = false) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 8500);
+
+  // 👉 Fish Audio में देवनागरी '।' को '. ' करने से वाक्य का ठहराव और उच्चारण ज़्यादा साफ़ निकलता है
+  const fishReadyText = isHindi ? String(text || '').replace(/।/g, '. ') : text;
 
   try {
     const res = await fetch('https://api.fish.audio/v1/tts', {
@@ -324,11 +398,11 @@ async function synthesizeFishCustomVoice(text, tone, apiKey, voiceId) {
         model: 's2.1-pro-free'
       },
       body: JSON.stringify({
-        text,
+        text: fishReadyText,
         reference_id: voiceId,
         format: 'mp3',
         mp3_bitrate: 192,
-        chunk_length: 200,
+        chunk_length: tone.chunkLength || 180,
         normalize: true,
         latency: 'normal',
         temperature: tone.temperature,
@@ -467,7 +541,8 @@ export default async (req) => {
   }
 
   const requestedVoice = String(body.voice || 'vikash').trim().toLowerCase();
-  const tone = analyzeConversationalTone(spokenText);
+  const isHindiText = detectHindiOrHinglish(spokenText);
+  const tone = analyzeConversationalTone(spokenText, isHindiText, requestedVoice);
 
   // 👉 अगर यूज़र ने 'female' (Ananya — Indian Female) चुना है, तो बिना किसी बदलाव के सीधे वही ओरिजिनल आवाज़ चलाएँ
   if (requestedVoice === 'female') {
@@ -499,7 +574,13 @@ export default async (req) => {
     : 'ok';
 
   if (fishApiKey && targetModelId) {
-    const fishRes = await synthesizeFishCustomVoice(spokenText, tone, fishApiKey, targetModelId);
+    const fishRes = await synthesizeFishCustomVoice(
+      spokenText,
+      tone,
+      fishApiKey,
+      targetModelId,
+      isHindiText
+    );
     fishDebug = fishRes.debug;
     if (fishRes.ok && fishRes.audio) {
       return new Response(fishRes.audio, {

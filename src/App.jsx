@@ -17,10 +17,11 @@ const TTS_API = `${API_BASE}/.netlify/functions/tts`;
 const VOICE_OPTIONS = [
   { id: 'vikash', label: 'Vikash', subtitle: 'My Voice (Default)' },
   { id: 'female', label: 'Ananya', subtitle: 'Indian Female' },
-  { id: 'naman', label: 'Naman', subtitle: 'Male Voice' },
   { id: 'modi', label: 'Narendra Modi', subtitle: 'Famous Voice' },
-  { id: 'trump', label: 'Donald Trump', subtitle: 'Famous Voice' },
-  { id: 'amitabh', label: 'Amitabh Bachchan', subtitle: 'Famous Voice' }
+  { id: 'amitabh', label: 'Amitabh Bachchan', subtitle: 'Famous Voice' },
+  { id: 'osho', label: 'Osho', subtitle: 'Famous Voice' },
+  { id: 'elon', label: 'Elon Musk', subtitle: 'Famous Voice' },
+  { id: 'trump', label: 'Donald Trump', subtitle: 'Famous Voice' }
 ];
 
 const INITIAL_CHIPS = [
