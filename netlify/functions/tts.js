@@ -1,16 +1,28 @@
 // File: netlify/functions/tts.js
-// Vikash AI — Expressive Human-Like Voice Engine
-// Priority 1: Your Custom Cloned Voice via Fish Audio (`FISH_API_KEY` + `FISH_VOICE_ID`)
-// Priority 2: Free Unlimited Hindi Neural Audio Stream (Zero skipped words, pure Hindi accent)
-// Priority 3: Frontend Browser Voice fallback
+// Vikash AI — Multi-Voice Expressive Engine
+// Supports: Vikash (Default), Ananya (Original Indian Female), Naman, Narendra Modi, Donald Trump, Amitabh Bachchan
+import { VOICE_MODEL_IDS } from './voiceModels.js';
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
-  'Access-Control-Expose-Headers': 'X-Voice-Source, X-Voice-Mood, X-Playback-Rate, X-Fish-Debug',
+  'Access-Control-Expose-Headers': 'X-Voice-Source, X-Voice-Mood, X-Playback-Rate, X-Fish-Debug, X-Selected-Voice',
   'Access-Control-Max-Age': '86400'
 };
+
+/**
+ * 👉 अब सभी Fish Audio Model IDs सीधे netlify/functions/voiceModels.js से लोड होती हैं।
+ */
+function getFishVoiceModelMap() {
+  return {
+    vikash: String(VOICE_MODEL_IDS.vikash || process.env.FISH_VOICE_ID || '').trim(),
+    naman: String(VOICE_MODEL_IDS.naman || '').trim(),
+    modi: String(VOICE_MODEL_IDS.modi || '').trim(),
+    trump: String(VOICE_MODEL_IDS.trump || '').trim(),
+    amitabh: String(VOICE_MODEL_IDS.amitabh || '').trim()
+  };
+}
 
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), {
@@ -67,7 +79,7 @@ const HINDI_0_TO_99 = [
   'दस', 'ग्यारह', 'बारह', 'तेरह', 'चौदह', 'पंद्रह', 'सोलह', 'सत्रह', 'अठारह', 'उन्नीस',
   'बीस', 'इक्कीस', 'बाईस', 'तेईस', 'चौबीस', 'पच्चीस', 'छब्बीस', 'सत्ताईस', 'अट्ठाईस', 'उनतीस',
   'तीस', 'इकतीस', 'बत्तीस', 'तैंतीस', 'चौंतीस', 'पैंतीस', 'छत्तीस', 'सैंतीस', 'अड़तीस', 'उनतालीस',
-  'चालीस', 'इकतालीस', 'बयालीस', 'तैंतीस', 'चवालीस', 'पैंतीस', 'छियालीस', 'सैंतालीस', 'अड़तालीस', 'उनचास',
+  'चालीस', 'इकतालीस', 'बयालीस', 'तैंतालीस', 'चवालीस', 'पैंतालीस', 'छियालीस', 'सैंतालीस', 'अड़तालीस', 'उनचास',
   'पचास', 'इक्यावन', 'बावन', 'तिरेपन', 'चौवन', 'पचपन', 'छप्पन', 'सत्तावन', 'अट्ठावन', 'उनसठ',
   'साठ', 'इकसठ', 'बासठ', 'तिरसठ', 'चौंसठ', 'पैंसठ', 'छियासठ', 'सड़सठ', 'अड़सठ', 'उनहत्तर',
   'सत्तर', 'इकहत्तर', 'बहत्तर', 'तिहत्तर', 'चौहत्तर', 'पचहत्तर', 'छिहत्तर', 'सतहत्तर', 'अठहत्तर', 'उनासी',
@@ -75,16 +87,11 @@ const HINDI_0_TO_99 = [
   'नब्बे', 'इक्यानवे', 'बानवे', 'तिरानवे', 'चौरानवे', 'पचानवे', 'छियानवे', 'सत्तानवे', 'अट्ठानवे', 'निन्यानवे'
 ];
 
-/**
- * Converts a numeric string (Indian numbering system up to 99 crore, with optional decimal)
- * into natural spoken Hindi words (e.g., "800" -> "आठ सौ", "84.3" -> "चौरासी पॉइंट तीन").
- */
 function numberToHindiWords(rawNum) {
   const cleaned = String(rawNum || '').replace(/,/g, '');
   if (!/^\d+(?:\.\d+)?$/.test(cleaned)) return rawNum;
 
   const [intStr, decStr] = cleaned.split('.');
-  // Keep phone numbers, OTPs, or leading-zero codes untouched
   if (intStr.length > 9 || (intStr.length > 1 && intStr.startsWith('0'))) {
     return rawNum;
   }
@@ -132,10 +139,6 @@ function numberToHindiWords(rawNum) {
   return result;
 }
 
-/**
- * Strips URLs, emails, emojis, LaTeX, and markdown symbols while keeping lively
- * conversational rhythm and language-aware number/currency pronunciation.
- */
 function shapeConversationalText(raw) {
   let text = String(raw || '')
     .replace(/\[([^\]]+)\]\((?:https?:\/\/|tel:|mailto:)[^)]+\)/gi, '$1')
@@ -147,7 +150,6 @@ function shapeConversationalText(raw) {
     .replace(/\b[\w.+-]+@[\w-]+\.[\w.-]+\b/g, ' ')
     .replace(/[\p{Extended_Pictographic}\p{Emoji_Presentation}\uFE0F\u200D]/gu, ' ')
     .replace(/\\(?:text|mathbf|frac|times)\b/g, ' ')
-    // Prevent awkward mid-word full-stop pauses on dotted tech terms & titles
     .replace(/\bB\.Tech\b/gi, 'B Tech')
     .replace(/\bM\.Tech\b/gi, 'M Tech')
     .replace(/\bDr\./gi, 'Doctor')
@@ -158,7 +160,6 @@ function shapeConversationalText(raw) {
   const isHindiOrHinglish = detectHindiOrHinglish(text);
 
   if (isHindiOrHinglish) {
-    // Convert temperature, currency, %, math symbols, acronyms & numbers into crisp spoken Hindi
     text = text
       .replace(/\bAIML\b/g, 'ए आई एम एल')
       .replace(/\bAI\s*&\s*ML\b/gi, 'ए आई एंड एम एल')
@@ -173,7 +174,6 @@ function shapeConversationalText(raw) {
         numberToHindiWords(num)
       );
   } else {
-    // Keep English digits intact and use clean English units/words
     text = text
       .replace(/\bAIML\b/g, 'A I M L')
       .replace(/(\d+(?:\.\d+)?)\s*°\s*C\b/gi, '$1 degrees Celsius')
@@ -433,31 +433,18 @@ export default async (req) => {
   }
 
   const fishApiKey = String(process.env.FISH_API_KEY || '').trim();
-  const fishVoiceId = String(process.env.FISH_VOICE_ID || '').trim();
+  const voiceMap = getFishVoiceModelMap();
 
   if (req.method === 'GET') {
     const url = new URL(req.url);
     if (url.searchParams.get('debug') === '1') {
-      let fishTest = { skipped: true, reason: 'missing_env_vars' };
-      if (fishApiKey && fishVoiceId) {
-        const res = await synthesizeFishCustomVoice(
-          'नमस्ते विकास',
-          analyzeConversationalTone('नमस्ते विकास'),
-          fishApiKey,
-          fishVoiceId
-        );
-        fishTest = {
-          ok: res.ok,
-          bytes: res.audio ? res.audio.byteLength : 0,
-          debug: res.debug
-        };
-      }
+      const configuredVoices = Object.fromEntries(
+        Object.entries(voiceMap).map(([k, v]) => [k, Boolean(v)])
+      );
       return jsonResponse(200, {
         hasFishApiKey: Boolean(fishApiKey),
-        hasFishVoiceId: Boolean(fishVoiceId),
-        fishVoiceId,
-        model: 's2.1-pro-free',
-        fishTest
+        configuredVoices: { ...configuredVoices, female: true },
+        model: 's2.1-pro-free'
       });
     }
     return jsonResponse(200, { ok: true });
@@ -479,12 +466,40 @@ export default async (req) => {
     return jsonResponse(400, { fallback: true, reason: 'empty_text' });
   }
 
+  const requestedVoice = String(body.voice || 'vikash').trim().toLowerCase();
   const tone = analyzeConversationalTone(spokenText);
-  let fishDebug = 'missing_env_vars';
 
-  // 1. Priority 1: Your Custom Cloned Voice (Fish Audio)
-  if (fishApiKey && fishVoiceId) {
-    const fishRes = await synthesizeFishCustomVoice(spokenText, tone, fishApiKey, fishVoiceId);
+  // 👉 अगर यूज़र ने 'female' (Ananya — Indian Female) चुना है, तो बिना किसी बदलाव के सीधे वही ओरिजिनल आवाज़ चलाएँ
+  if (requestedVoice === 'female') {
+    const hindiAudio = await synthesizeHindiNeuralStream(spokenText);
+    if (hindiAudio) {
+      return new Response(hindiAudio, {
+        status: 200,
+        headers: {
+          'Content-Type': 'audio/mpeg',
+          'X-Voice-Source': 'hindi-neural-fallback',
+          'X-Selected-Voice': 'female',
+          'X-Voice-Mood': tone.mood,
+          'X-Playback-Rate': String(tone.playbackRate),
+          'X-Fish-Debug': 'direct_female_selected',
+          'Cache-Control': 'public, max-age=86400',
+          ...CORS_HEADERS
+        }
+      });
+    }
+    return jsonResponse(200, { fallback: true, reason: 'female_tts_unavailable' });
+  }
+
+  // 👉 Fish Audio Custom / Celebrity Voice (Vikash, Naman, Modi, Trump, Amitabh)
+  const targetModelId = voiceMap[requestedVoice] || '';
+  let fishDebug = !fishApiKey
+    ? 'missing_fish_api_key'
+    : !targetModelId
+    ? `voice_id_not_set_for_${requestedVoice}`
+    : 'ok';
+
+  if (fishApiKey && targetModelId) {
+    const fishRes = await synthesizeFishCustomVoice(spokenText, tone, fishApiKey, targetModelId);
     fishDebug = fishRes.debug;
     if (fishRes.ok && fishRes.audio) {
       return new Response(fishRes.audio, {
@@ -492,6 +507,7 @@ export default async (req) => {
         headers: {
           'Content-Type': 'audio/mpeg',
           'X-Voice-Source': 'fish-audio-custom',
+          'X-Selected-Voice': requestedVoice,
           'X-Voice-Mood': tone.mood,
           'X-Playback-Rate': '1.0',
           'X-Fish-Debug': 'ok',
@@ -502,7 +518,7 @@ export default async (req) => {
     }
   }
 
-  // 2. Priority 2: Free Unlimited Hindi Neural Audio Stream
+  // 👉 Safe Fallback: अगर उस आवाज़ की Model ID अभी सेट नहीं है या कोटा खत्म है, तो ओरिजिनल इंडियन फीमेल वॉइस चलेगी
   const hindiAudio = await synthesizeHindiNeuralStream(spokenText);
   if (hindiAudio) {
     return new Response(hindiAudio, {
@@ -510,6 +526,7 @@ export default async (req) => {
       headers: {
         'Content-Type': 'audio/mpeg',
         'X-Voice-Source': 'hindi-neural-fallback',
+        'X-Selected-Voice': requestedVoice,
         'X-Voice-Mood': tone.mood,
         'X-Playback-Rate': String(tone.playbackRate),
         'X-Fish-Debug': fishDebug.replace(/[\r\n]+/g, ' ').slice(0, 120),
@@ -519,6 +536,5 @@ export default async (req) => {
     });
   }
 
-  // 3. Emergency Browser Fallback
   return jsonResponse(200, { fallback: true, reason: 'tts_unavailable', fishDebug });
 };

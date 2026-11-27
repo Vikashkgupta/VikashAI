@@ -14,6 +14,15 @@ const CHAT_API = `${API_BASE}/.netlify/functions/personalChat`;
 const ADMIN_API = `${API_BASE}/.netlify/functions/adminDashboard`;
 const TTS_API = `${API_BASE}/.netlify/functions/tts`;
 
+const VOICE_OPTIONS = [
+  { id: 'vikash', label: 'Vikash', subtitle: 'My Voice (Default)' },
+  { id: 'female', label: 'Ananya', subtitle: 'Indian Female' },
+  { id: 'naman', label: 'Naman', subtitle: 'Male Voice' },
+  { id: 'modi', label: 'Narendra Modi', subtitle: 'Famous Voice' },
+  { id: 'trump', label: 'Donald Trump', subtitle: 'Famous Voice' },
+  { id: 'amitabh', label: 'Amitabh Bachchan', subtitle: 'Famous Voice' }
+];
+
 const INITIAL_CHIPS = [
   '🚀 Vikash के प्रोजेक्ट्स दिखाओ',
   '📸 Instagram स्टेटस और लाइक्स बताओ',
@@ -45,10 +54,6 @@ function getDetectedChatMode() {
   }
 }
 
-/**
- * Splits long text into natural sentence-boundary chunks (~230 chars)
- * so Fish Audio / Fallback TTS starts in ~1-2s and NEVER hits Netlify timeouts!
- */
 function splitTextIntoSpeechChunks(text, maxLen = 230) {
   const sentences = String(text || '')
     .split(/(?<=[।.!?])\s+/)
@@ -321,6 +326,17 @@ export default function App() {
       return 'Visitor';
     }
   });
+  const [selectedVoice, setSelectedVoice] = useState(() => {
+    try {
+      const saved = localStorage.getItem('vikash_ai_selected_voice');
+      return VOICE_OPTIONS.some((v) => v.id === saved) ? saved : 'vikash';
+    } catch {
+      return 'vikash';
+    }
+  });
+  const [showVoiceMenu, setShowVoiceMenu] = useState(false);
+  const voiceMenuRef = useRef(null);
+
   const [avatarError, setAvatarError] = useState(false);
   const [messages, setMessages] = useState([
     {
@@ -383,10 +399,34 @@ export default function App() {
   const [isSavingNote, setIsSavingNote] = useState(false);
 
   const isBusy = Boolean(isLoading || (streamingMsgId && streamingMsgId !== 'welcome-1'));
+  const activeVoiceObj = VOICE_OPTIONS.find((v) => v.id === selectedVoice) || VOICE_OPTIONS[0];
 
   const showToast = (msg) => {
     setToastText(msg);
     setTimeout(() => setToastText(''), 2500);
+  };
+
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (voiceMenuRef.current && !voiceMenuRef.current.contains(e.target)) {
+        setShowVoiceMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  const handleSelectVoice = (voiceId) => {
+    stopAllAudio();
+    setSelectedVoice(voiceId);
+    setShowVoiceMenu(false);
+    try {
+      localStorage.setItem('vikash_ai_selected_voice', voiceId);
+    } catch {}
+    const picked = VOICE_OPTIONS.find((v) => v.id === voiceId);
+    if (picked) {
+      showToast(`Voice set: ${picked.label}`);
+    }
   };
 
   const handleFeedScroll = () => {
@@ -634,8 +674,9 @@ export default function App() {
     setLoadingAudioMsgId(null);
   };
 
-  const fetchTtsChunk = async (chunkText, signal) => {
-    const cached = audioCacheRef.current.get(chunkText);
+  const fetchTtsChunk = async (chunkText, signal, voiceKey) => {
+    const cacheKey = `${voiceKey}::${chunkText}`;
+    const cached = audioCacheRef.current.get(cacheKey);
     if (cached) return cached;
 
     const localCtrl = new AbortController();
@@ -648,7 +689,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: localCtrl.signal,
-        body: JSON.stringify({ text: chunkText })
+        body: JSON.stringify({ text: chunkText, voice: voiceKey })
       });
       clearTimeout(timer);
 
@@ -666,8 +707,8 @@ export default function App() {
       const blobUrl = URL.createObjectURL(blob);
       const finalRate = voiceSource === 'fish-audio-custom' ? 1.0 : playbackRate;
       const entry = { url: blobUrl, rate: finalRate, source: voiceSource };
-      audioCacheRef.current.set(chunkText, entry);
-      console.info('[Vikash AI TTS]:', voiceSource || 'server-audio', '| rate:', finalRate);
+      audioCacheRef.current.set(cacheKey, entry);
+      console.info('[Vikash AI TTS]:', voiceKey, '->', voiceSource || 'server-audio', '| rate:', finalRate);
       return entry;
     } catch {
       clearTimeout(timer);
@@ -689,63 +730,60 @@ export default function App() {
         if ('preservesPitch' in audio) audio.preservesPitch = true;
         audioPlayerRef.current = audio;
 
-        // Open, Fresh Podcast EQ (removes closed-room boxiness & adds natural crisp presence)
+        // 👉 Female voice ('hindi-neural-fallback') plays 100% untouched & pure!
+        // Open Podcast EQ is applied ONLY to Fish Audio custom voices.
         let sourceNode = null;
-        try {
-          const AudioCtx = window.AudioContext || window.webkitAudioContext;
-          if (AudioCtx) {
-            if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
-              audioCtxRef.current = new AudioCtx();
+        if (entry.source === 'fish-audio-custom') {
+          try {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (AudioCtx) {
+              if (!audioCtxRef.current || audioCtxRef.current.state === 'closed') {
+                audioCtxRef.current = new AudioCtx();
+              }
+              const ctx = audioCtxRef.current;
+              if (ctx.state === 'suspended') {
+                ctx.resume().catch(() => {});
+              }
+
+              sourceNode = ctx.createMediaElementSource(audio);
+
+              const cleanLowCut = ctx.createBiquadFilter();
+              cleanLowCut.type = 'highpass';
+              cleanLowCut.frequency.value = 85;
+
+              const deBoxMid = ctx.createBiquadFilter();
+              deBoxMid.type = 'peaking';
+              deBoxMid.frequency.value = 280;
+              deBoxMid.Q.value = 1.2;
+              deBoxMid.gain.value = -2.2;
+
+              const gentleDeHarsh = ctx.createBiquadFilter();
+              gentleDeHarsh.type = 'peaking';
+              gentleDeHarsh.frequency.value = 3400;
+              gentleDeHarsh.Q.value = 1.6;
+              gentleDeHarsh.gain.value = -1.2;
+
+              const openAirHigh = ctx.createBiquadFilter();
+              openAirHigh.type = 'highshelf';
+              openAirHigh.frequency.value = 6500;
+              openAirHigh.gain.value = 1.8;
+
+              const compressor = ctx.createDynamicsCompressor();
+              compressor.threshold.value = -14;
+              compressor.knee.value = 20;
+              compressor.ratio.value = 2.0;
+              compressor.attack.value = 0.012;
+              compressor.release.value = 0.16;
+
+              sourceNode
+                .connect(cleanLowCut)
+                .connect(deBoxMid)
+                .connect(gentleDeHarsh)
+                .connect(openAirHigh)
+                .connect(compressor)
+                .connect(ctx.destination);
             }
-            const ctx = audioCtxRef.current;
-            if (ctx.state === 'suspended') {
-              ctx.resume().catch(() => {});
-            }
-
-            sourceNode = ctx.createMediaElementSource(audio);
-
-            // Clean low-end rumble so it doesn't sound boom-y or closed-in
-            const cleanLowCut = ctx.createBiquadFilter();
-            cleanLowCut.type = 'highpass';
-            cleanLowCut.frequency.value = 85;
-
-            // Remove "closed room / boxy" resonance around 280Hz
-            const deBoxMid = ctx.createBiquadFilter();
-            deBoxMid.type = 'peaking';
-            deBoxMid.frequency.value = 280;
-            deBoxMid.Q.value = 1.2;
-            deBoxMid.gain.value = -2.2;
-
-            // Gentle touch on harshness only (keeps clarity alive)
-            const gentleDeHarsh = ctx.createBiquadFilter();
-            gentleDeHarsh.type = 'peaking';
-            gentleDeHarsh.frequency.value = 3400;
-            gentleDeHarsh.Q.value = 1.6;
-            gentleDeHarsh.gain.value = -1.2;
-
-            // Fresh open "air" boost for engaging, lively voice presence
-            const openAirHigh = ctx.createBiquadFilter();
-            openAirHigh.type = 'highshelf';
-            openAirHigh.frequency.value = 6500;
-            openAirHigh.gain.value = 1.8;
-
-            const compressor = ctx.createDynamicsCompressor();
-            compressor.threshold.value = -14;
-            compressor.knee.value = 20;
-            compressor.ratio.value = 2.0;
-            compressor.attack.value = 0.012;
-            compressor.release.value = 0.16;
-
-            sourceNode
-              .connect(cleanLowCut)
-              .connect(deBoxMid)
-              .connect(gentleDeHarsh)
-              .connect(openAirHigh)
-              .connect(compressor)
-              .connect(ctx.destination);
-          }
-        } catch {
-          // If Web Audio EQ is blocked on any device, audio still plays cleanly directly
+          } catch {}
         }
 
         const finish = (status) => {
@@ -836,11 +874,12 @@ export default function App() {
     const playToken = ttsPlayTokenRef.current;
     const ctrl = new AbortController();
     ttsAbortRef.current = ctrl;
+    const activeVoiceId = selectedVoice;
 
     setLoadingAudioMsgId(msgId);
 
     try {
-      let nextChunkPromise = fetchTtsChunk(chunks[0], ctrl.signal);
+      let nextChunkPromise = fetchTtsChunk(chunks[0], ctrl.signal, activeVoiceId);
 
       for (let i = 0; i < chunks.length; i += 1) {
         if (ttsPlayTokenRef.current !== playToken) break;
@@ -848,9 +887,8 @@ export default function App() {
         const audioEntry = await nextChunkPromise;
         if (ttsPlayTokenRef.current !== playToken) break;
 
-        // Prefetch the next chunk in parallel while the current chunk plays!
         if (i + 1 < chunks.length) {
-          nextChunkPromise = fetchTtsChunk(chunks[i + 1], ctrl.signal);
+          nextChunkPromise = fetchTtsChunk(chunks[i + 1], ctrl.signal, activeVoiceId);
         } else {
           nextChunkPromise = null;
         }
@@ -1307,7 +1345,66 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-1 flex-shrink-0">
+        <div className="flex items-center gap-1.5 flex-shrink-0">
+          {/* Voice Selector Dropdown */}
+          <div ref={voiceMenuRef} className="relative">
+            <button
+              type="button"
+              onClick={() => setShowVoiceMenu((prev) => !prev)}
+              className="h-8 px-2.5 rounded-full bg-neutral-100 hover:bg-neutral-200/80 text-neutral-800 text-xs font-medium inline-flex items-center gap-1.5 transition-colors"
+              title="Change Voice"
+            >
+              <svg className="w-3.5 h-3.5 text-neutral-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                  d="M11 5L6 9H2v6h4l5 4V5zM15.54 8.46a5 5 0 010 7.07"
+                />
+              </svg>
+              <span className="max-w-[92px] sm:max-w-[120px] truncate">{activeVoiceObj.label}</span>
+              <svg
+                className={`w-3 h-3 text-neutral-500 transition-transform ${showVoiceMenu ? 'rotate-180' : ''}`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+
+            {showVoiceMenu && (
+              <div className="absolute right-0 mt-2 w-52 bg-white rounded-2xl shadow-xl border border-neutral-200/90 py-1.5 z-50">
+                <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-neutral-400 border-b border-neutral-100">
+                  Select AI Voice
+                </div>
+                {VOICE_OPTIONS.map((v) => {
+                  const isActive = v.id === selectedVoice;
+                  return (
+                    <button
+                      key={v.id}
+                      type="button"
+                      onClick={() => handleSelectVoice(v.id)}
+                      className={`w-full px-3 py-2 text-left flex items-center justify-between gap-2 transition-colors ${
+                        isActive ? 'bg-neutral-100 text-neutral-900' : 'text-neutral-700 hover:bg-neutral-50'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold truncate">{v.label}</div>
+                        <div className="text-[10px] text-neutral-400 truncate">{v.subtitle}</div>
+                      </div>
+                      {isActive && (
+                        <svg className="w-4 h-4 text-neutral-900 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.2" d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           <button
             type="button"
             onClick={handleClearChat}
